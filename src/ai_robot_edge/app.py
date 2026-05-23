@@ -9,6 +9,7 @@ from .actions import ActionDispatcher
 from .devices.factory import build_camera, build_microphone, build_servo_controller
 from .events import ActionIntent, Utterance, VisionEvent
 from .interaction import InteractionCoordinator
+from .server import ConversationClient, ConversationWorker
 from .vision import CameraWorker, build_person_detector
 
 LOGGER = logging.getLogger(__name__)
@@ -58,18 +59,21 @@ class EdgeApp:
         )
         tasks.append(asyncio.create_task(coordinator.run(), name="interaction"))
         tasks.append(asyncio.create_task(dispatcher.run(), name="actions"))
-        tasks.append(asyncio.create_task(self._log_utterances(utterance_queue)))
+        conversation_client = ConversationClient(
+            config=self.config,
+            on_tts=self._handle_tts,
+            on_action=action_queue.put,
+        )
+        conversation_worker = ConversationWorker(
+            utterance_queue=utterance_queue,
+            client=conversation_client,
+        )
+        tasks.append(asyncio.create_task(conversation_worker.run(), name="conversation"))
         try:
             await asyncio.gather(*tasks)
         finally:
             for task in tasks:
                 task.cancel()
 
-    async def _log_utterances(self, queue: asyncio.Queue[Utterance]) -> None:
-        while True:
-            utterance = await queue.get()
-            LOGGER.info(
-                "utterance queued for server: request_id=%s bytes=%s",
-                utterance.request_id,
-                len(utterance.audio_bytes),
-            )
+    async def _handle_tts(self, audio: bytes, sample_rate: int, channels: int) -> None:
+        LOGGER.info("received tts audio: bytes=%s sample_rate=%s", len(audio), sample_rate)
