@@ -1,0 +1,57 @@
+device_id: orange-pi-edge-001
+
+server:
+  websocket_url: ws://127.0.0.1:8000/api/v1/edge/sessions/{device_id}
+  bearer_token: change-me
+  connect_timeout_seconds: 10
+  heartbeat_seconds: 20
+  reconnect:
+    initial_delay_seconds: 1
+    max_delay_seconds: 30
+
+runtime:
+  mode: simulated
+  log_level: INFO
+  prefer_npu: true
+
+camera:
+  enabled: true
+  source: 0
+  width: 640
+  height: 480
+  fps: 10
+  frame_skip: 2
+
+vision:
+  detector: simulated
+  person_threshold: 0.55
+  stable_frames: 3
+  welcome_cooldown_seconds: 30
+
+microphone:
+  enabled: true
+  sample_rate: 16000
+  channels: 1
+  frame_ms: 30
+  device: null
+
+wake_word:
+  enabled: true
+  engine: simulated
+  keyword_id: ""
+  model_path: ""
+
+vad:
+  energy_threshold: 0.015
+  silence_ms: 800
+  max_utterance_ms: 10000
+  pre_roll_ms: 300
+
+speaker:
+  enabled: true
+  device: null
+  sample_rate: 16000
+
+servo:
+  enabled: false
+  controller: noop
