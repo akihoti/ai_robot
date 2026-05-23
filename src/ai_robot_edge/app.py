@@ -6,9 +6,15 @@ import logging
 from .audio import AudioWorker, EnergyVadSegmenter, build_wake_word_detector
 from .config import EdgeConfig
 from .actions import ActionDispatcher
-from .devices.factory import build_camera, build_microphone, build_servo_controller
+from .devices.factory import (
+    build_camera,
+    build_microphone,
+    build_servo_controller,
+    build_speaker,
+)
 from .events import ActionIntent, Utterance, VisionEvent
 from .interaction import InteractionCoordinator
+from .playback import PlaybackWorker, TtsChunk
 from .server import ConversationClient, ConversationWorker
 from .vision import CameraWorker, build_person_detector
 
@@ -28,6 +34,7 @@ class EdgeApp:
         vision_queue: asyncio.Queue[VisionEvent] = asyncio.Queue(maxsize=32)
         action_queue: asyncio.Queue[ActionIntent] = asyncio.Queue(maxsize=32)
         utterance_queue: asyncio.Queue[Utterance] = asyncio.Queue(maxsize=8)
+        tts_queue: asyncio.Queue[TtsChunk] = asyncio.Queue(maxsize=32)
         tasks: list[asyncio.Task] = []
         if self.config.camera.enabled:
             camera = build_camera(self.config)
@@ -61,7 +68,9 @@ class EdgeApp:
         tasks.append(asyncio.create_task(dispatcher.run(), name="actions"))
         conversation_client = ConversationClient(
             config=self.config,
-            on_tts=self._handle_tts,
+            on_tts=lambda audio, sample_rate, channels: tts_queue.put(
+                TtsChunk(audio=audio, sample_rate=sample_rate, channels=channels)
+            ),
             on_action=action_queue.put,
         )
         conversation_worker = ConversationWorker(
@@ -69,11 +78,14 @@ class EdgeApp:
             client=conversation_client,
         )
         tasks.append(asyncio.create_task(conversation_worker.run(), name="conversation"))
+        if self.config.speaker.enabled:
+            playback_worker = PlaybackWorker(
+                queue=tts_queue,
+                speaker=build_speaker(self.config),
+            )
+            tasks.append(asyncio.create_task(playback_worker.run(), name="playback"))
         try:
             await asyncio.gather(*tasks)
         finally:
             for task in tasks:
                 task.cancel()
-
-    async def _handle_tts(self, audio: bytes, sample_rate: int, channels: int) -> None:
-        LOGGER.info("received tts audio: bytes=%s sample_rate=%s", len(audio), sample_rate)
