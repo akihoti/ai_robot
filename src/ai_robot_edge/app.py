@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from .audio import AudioWorker, EnergyVadSegmenter, build_wake_word_detector
+from .audio.vad import EnergyVadSegmenter
+from .audio.wake_word import build_wake_word_detector
+from .audio.worker import AudioWorker
 from .config import EdgeConfig
 from .actions import ActionDispatcher
 from .devices.factory import (

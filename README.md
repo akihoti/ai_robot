@@ -38,3 +38,13 @@ Local commits can be pushed after re-authentication:
 gh auth login -h github.com
 git push -u origin main
 ```
+
+## Deployment
+
+See `docs/deployment.md` for Orange Pi deployment with `systemd + venv`.
+
+## Servo Status
+
+Servo control is represented by a safe `NoopServoController` in v1. See
+`docs/servo_todo.md` for the hardware details needed before implementing a real
+driver.

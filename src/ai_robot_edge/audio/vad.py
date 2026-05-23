@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-
-import numpy as np
+from array import array
 
 from ..config import VadConfig
 from ..events import AudioFrame, Utterance
@@ -11,10 +10,12 @@ from ..events import AudioFrame, Utterance
 def frame_energy(frame: AudioFrame) -> float:
     if not frame.data:
         return 0.0
-    samples = np.frombuffer(frame.data, dtype=np.int16)
-    if samples.size == 0:
+    samples = array("h")
+    samples.frombytes(frame.data)
+    if not samples:
         return 0.0
-    return float(np.sqrt(np.mean((samples.astype(np.float32) / 32768.0) ** 2)))
+    square_sum = sum((sample / 32768.0) ** 2 for sample in samples)
+    return (square_sum / len(samples)) ** 0.5
 
 
 class EnergyVadSegmenter:

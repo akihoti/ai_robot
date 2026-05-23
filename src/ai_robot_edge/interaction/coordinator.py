@@ -21,7 +21,7 @@ class InteractionCoordinator:
         self.vision_queue = vision_queue
         self.action_queue = action_queue
         self._present_frames = 0
-        self._last_welcome_at = 0.0
+        self._last_welcome_at = -vision_config.welcome_cooldown_seconds
 
     async def run(self) -> None:
         while True:

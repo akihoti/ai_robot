@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 
 @dataclass(frozen=True)
 class ServerConfig:
@@ -102,6 +100,8 @@ def load_config(path: str | Path) -> EdgeConfig:
 
 
 def _load_yaml(path: str | Path) -> dict[str, Any]:
+    import yaml
+
     config_path = Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"config file not found: {config_path}")

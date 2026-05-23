@@ -1,0 +1,16 @@
+[Unit]
+Description=AI Robot Edge Service
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=orangepi
+WorkingDirectory=/opt/ai_robot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/ai_robot/.venv/bin/ai-robot-edge --config /etc/ai-robot/edge.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

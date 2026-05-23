@@ -6,8 +6,6 @@ from time import time
 from typing import Any
 from uuid import uuid4
 
-import numpy as np
-
 
 def now_ms() -> int:
     return int(time() * 1000)
@@ -28,7 +26,7 @@ class ActionName(str, Enum):
 
 @dataclass(frozen=True)
 class CameraFrame:
-    data: np.ndarray
+    data: Any
     timestamp_ms: int = field(default_factory=now_ms)
     sequence: int = 0
 
