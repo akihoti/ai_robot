@@ -38,7 +38,7 @@ microphone:
 wake_word:
   enabled: true
   engine: simulated
-  keyword_id: ""
+  keyword_id: demo-wake-word
   model_path: ""
 
 vad:

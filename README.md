@@ -19,8 +19,9 @@ cp config/edge.example.yaml config/edge.yaml
 python -m ai_robot_edge --config config/edge.yaml
 ```
 
-The sample config runs in simulated mode by default. Set a real wake-word model
-or engine configuration before deploying to hardware.
+The sample config runs in simulated mode by default. Replace
+`wake_word.keyword_id`, `server.bearer_token`, and device settings before
+deploying to hardware.
 
 ## Documentation
 
