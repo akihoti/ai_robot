@@ -1,14 +1,17 @@
 [Unit]
-Description=AI Robot Edge Service
-After=network-online.target sound.target
+Description=AI Robot Edge Service (Atlas 200I DK A2)
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=orangepi
+User=root
 WorkingDirectory=/opt/ai_robot
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/ai_robot/.venv/bin/ai-robot-edge --config /etc/ai-robot/edge.yaml
+Environment=ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/latest
+Environment=LD_LIBRARY_PATH=/var/davinci/driver/lib64:/var/davinci/driver/lib64/common:/var/davinci/driver/lib64/driver:/usr/local/Ascend/ascend-toolkit/latest/lib64
+Environment=PYTHONPATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages
+ExecStart=/root/.conda/envs/ai-robot/bin/ai-robot-edge --config /etc/ai-robot/edge.yaml
 Restart=always
 RestartSec=5
 

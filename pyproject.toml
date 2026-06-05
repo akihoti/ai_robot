@@ -24,6 +24,10 @@ audio = [
 vision = [
   "opencv-python>=4.8",
 ]
+ascend = [
+  "aclruntime>=0.0.2",
+  "ais-bench>=0.0.2",
+]
 
 [project.scripts]
 ai-robot-edge = "ai_robot_edge.__main__:main"

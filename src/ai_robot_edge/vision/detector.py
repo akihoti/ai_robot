@@ -54,26 +54,26 @@ class CpuPersonDetector:
         return DetectionResult(result.person_present, result.confidence, "cpu")
 
 
-class RknnPersonDetector:
-    """RK3588/NPU detector placeholder.
+class AclPersonDetector:
+    """Ascend 310B NPU detector via ACL runtime.
 
-    Replace this class with an RKNN model runner once the model path and runtime
-    package are chosen.
+    Replace this class with an ACL model runner once the model path and runtime
+    package are chosen. Requires CANN toolkit (ASCEND_TOOLKIT_HOME) to be configured.
     """
 
     def __init__(self, threshold: float) -> None:
         self._fallback = SimulatedPersonDetector(threshold)
-        LOGGER.warning("RKNN detector not configured; using heuristic fallback")
+        LOGGER.warning("ACL detector not configured; using heuristic fallback")
 
     async def detect(self, frame: CameraFrame) -> DetectionResult:
         result = await self._fallback.detect(frame)
-        return DetectionResult(result.person_present, result.confidence, "rknn-fallback")
+        return DetectionResult(result.person_present, result.confidence, "acl-fallback")
 
 
 def build_person_detector(config: EdgeConfig) -> PersonDetector:
     detector = config.vision.detector.lower()
-    if detector == "rknn" or (detector == "auto" and config.runtime.prefer_npu):
-        return RknnPersonDetector(config.vision.person_threshold)
+    if detector == "acl" or (detector == "auto" and config.runtime.prefer_npu):
+        return AclPersonDetector(config.vision.person_threshold)
     if detector == "cpu" or detector == "auto":
         return CpuPersonDetector(config.vision.person_threshold)
     return SimulatedPersonDetector(config.vision.person_threshold)

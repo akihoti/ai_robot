@@ -1,4 +1,4 @@
-device_id: orange-pi-edge-001
+device_id: atlas-200i-dk-a2-001
 
 server:
   websocket_url: ws://127.0.0.1:8000/api/v1/edge/sessions/{device_id}
@@ -10,7 +10,8 @@ server:
     max_delay_seconds: 30
 
 runtime:
-  mode: simulated
+  # supported modes: simulated, cpu, npu
+  mode: npu
   log_level: INFO
   prefer_npu: true
 
@@ -19,11 +20,14 @@ camera:
   source: 0
   width: 640
   height: 480
-  fps: 10
+  fps: 15
   frame_skip: 2
 
 vision:
-  detector: simulated
+  # detector: simulated | cpu | auto | acl
+  # auto: uses NPU when prefer_npu=true, otherwise CPU
+  # acl:  Ascend 310B NPU via ACL runtime (requires CANN toolkit)
+  detector: auto
   person_threshold: 0.55
   stable_frames: 3
   welcome_cooldown_seconds: 30
