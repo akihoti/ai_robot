@@ -22,8 +22,8 @@ simulated-device fallbacks so development can continue without final hardware.
 - No full gesture or action recognition.
 - No real servo hardware driver until the board, power, PWM/GPIO, and protocol
   details are confirmed.
-- No local HTTP management API. The service is a background process managed by
-  systemd.
+- No arbitrary remote shell. Local and server-triggered management operations
+  must pass through explicit allowlists.
 
 ## 3. Runtime Architecture
 
@@ -42,6 +42,10 @@ The service is a Python background process composed of small async workers:
    LLM, TTS, and action frames.
 9. `Speaker` plays TTS audio chunks.
 10. `ActionDispatcher` maps server action intents to a servo controller.
+11. `ManagementClient` reports device status and consumes allowlisted remote
+    commands.
+12. `ai-robot-edge-admin` serves the local Atlas edge management UI on port
+    `8090`.
 
 Workers communicate with typed events and bounded queues. The coordinator owns
 the high-level state, preventing overlapping welcome playback and voice sessions.

@@ -1,20 +1,22 @@
 # Servo TODO
 
-Real servo control is intentionally not implemented in v1. Before adding a
-driver, confirm:
+The first SongJia USB pan-tilt SDK is implemented in
+`ai_robot_edge.devices.gimbal`. See `docs/servo_sdk.md`.
 
-- exact Orange Pi model and OS image;
-- GPIO/PWM pin mapping;
-- whether a PCA9685 or other servo controller board will be used;
-- servo voltage and current requirements;
-- external power supply design and common ground wiring;
-- signal voltage and level shifting requirements;
-- channel count;
-- safe angle range for each joint;
-- neutral pose;
-- max speed and acceleration;
-- physical collision limits;
-- emergency stop behavior.
+Confirmed:
 
-The current `NoopServoController` logs all action intents and is safe to run on
-machines without hardware.
+- Atlas 200I DK A2 running Ubuntu 22.04;
+- SongJia USB controller using CH340 at 115200 baud;
+- stable path `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`;
+- servo ID `0` is pan and servo ID `1` is tilt;
+- protocol supports grouped movement and emergency stop commands.
+
+Still required before enabling live tracking:
+
+- measure safe pan and tilt angle limits;
+- confirm whether either axis direction must be inverted;
+- confirm neutral pose and cable clearance;
+- confirm max safe movement speed;
+- validate emergency power-disconnect procedure.
+
+The sample configuration keeps real movement disabled and uses dry-run mode.

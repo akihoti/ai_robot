@@ -26,6 +26,10 @@ Remote pushes require a valid GitHub credential for `akihoti/ai_robot`.
 8. Playback and actions: TTS playback queue, action dispatch, Noop servo.
 9. Deployment: systemd service, venv install script, configuration guide, and
    acceptance checklist.
+10. Server console: FastAPI app, Ragflow/Xinference adapters, device registry,
+    remote command queue, and static admin UI.
+11. Edge admin: local FastAPI app, Atlas status, hardware probes, config API,
+    allowlisted operations, and management WebSocket status reporting.
 
 ## 3. Acceptance Tests
 
@@ -37,6 +41,11 @@ Remote pushes require a valid GitHub credential for `akihoti/ai_robot`.
 - TTS chunks are queued and passed to the configured speaker.
 - Action intents are logged by `NoopServoController`.
 - systemd template starts the configured Python module.
+- Server `/admin` renders and reports degraded connector status when upstreams
+  are not configured.
+- Edge `/` renders and exposes status, logs, config, tests, and allowlisted
+  operations.
+- Remote commands are rejected unless allowlisted on both sides.
 
 ## 4. Risks
 

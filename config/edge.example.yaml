@@ -1,7 +1,7 @@
 device_id: atlas-200i-dk-a2-001
 
 server:
-  websocket_url: ws://127.0.0.1:8000/api/v1/edge/sessions/{device_id}
+  websocket_url: ws://10.88.129.172:8010/api/v1/edge/sessions/{device_id}
   bearer_token: change-me
   connect_timeout_seconds: 10
   heartbeat_seconds: 20
@@ -21,14 +21,18 @@ camera:
   width: 640
   height: 480
   fps: 15
-  frame_skip: 2
+  frame_skip: 1
 
 vision:
-  # detector: simulated | cpu | auto | acl
+  # detector: simulated | cpu | auto | acl | yolov5-face-om
   # auto: uses NPU when prefer_npu=true, otherwise CPU
   # acl:  Ascend 310B NPU via ACL runtime (requires CANN toolkit)
-  detector: auto
+  detector: yolov5-face-om
   person_threshold: 0.55
+  face_model_path: pretrain/yolov5n-face.om
+  face_input_size: 640
+  face_iou_threshold: 0.45
+  face_device_id: 0
   stable_frames: 3
   welcome_cooldown_seconds: 30
 
@@ -58,4 +62,77 @@ speaker:
 
 servo:
   enabled: false
-  controller: noop
+  controller: songjia
+  port: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
+  baudrate: 115200
+  timeout_seconds: 0.2
+  startup_delay_seconds: 2
+  default_move_time_ms: 300
+  # Keep true until physical pan/tilt directions and cable clearance are verified.
+  dry_run: true
+  pan:
+    servo_id: 0
+    # Robot-head yaw: 135 degrees is forward, with a conservative +/-60 range.
+    min_angle: 75
+    max_angle: 195
+    neutral_angle: 135
+    inverted: false
+  tilt:
+    servo_id: 1
+    # Robot-head pitch: 135 degrees is level, with a conservative +/-30 range.
+    min_angle: 105
+    max_angle: 165
+    neutral_angle: 135
+    inverted: false
+
+tracking:
+  enabled: false
+  # Yaw-only head tracking feels more natural for a robot head than full pitch lock.
+  tilt_enabled: false
+  dead_zone_x: 0.07
+  dead_zone_y: 0.05
+  pan_gain: 4.4
+  tilt_gain: 3.4
+  pan_ki: 0.0
+  pan_kd: 0.16
+  tilt_ki: 0.05
+  tilt_kd: 0.28
+  pan_integral_zone: 0.22
+  tilt_integral_zone: 0.18
+  max_step_degrees: 2.4
+  max_pan_step_degrees: 3.4
+  max_tilt_step_degrees: 1.8
+  max_delta_change_degrees: 0.8
+  move_time_ms: 35
+  min_update_interval_ms: 35
+  min_effective_pan_delta: 0.3
+  min_effective_tilt_delta: 0.15
+  derivative_filter_alpha: 0.25
+  pan_response_exponent: 1.25
+  tilt_response_exponent: 1.2
+  target_stickiness: 0.18
+  prediction_lead_seconds: 0.035
+  stale_detection_timeout_ms: 180
+  # Flip either direction when camera coordinates and physical movement disagree.
+  pan_direction: -1
+  tilt_direction: 1
+  center_on_target_lost: true
+  target_lost_timeout_seconds: 3
+
+admin:
+  enabled: true
+  host: 0.0.0.0
+  port: 8090
+  auth_token: change-me
+  allow_remote_ops: true
+  command_timeout_seconds: 30
+  log_path: /var/log/ai-robot-edge-admin.log
+  allowed_commands:
+    - logs
+    - restart_edge_service
+    - pull_update
+    - run_install
+    - test_camera
+    - test_microphone
+    - test_speaker
+    - test_server_connection

@@ -1,50 +1,74 @@
-# AI Robot Edge Service
+# AI Robot
 
-This repository contains the edge service for an intelligent voice interaction
-robot. The edge runs on an Orange Pi class device and coordinates local camera,
-microphone, speaker, and future servo hardware.
+This repository contains the current edge and server implementation for the
+robot system.
 
-The first version is a Python background process. It performs local wake-word
-and VAD handling, detects people in the camera stream, triggers welcome
-interactions, streams utterances to a Windows server over WebSocket, plays TTS
-audio, and dispatches optional action intents.
+- `src/ai_robot_edge`: Atlas 200I DK A2 edge runtime
+- `src/ai_robot_server`: server-side management and aggregation service
+- `config/`: edge and server configuration templates
+- `deploy/`: systemd units
+- `scripts/`: deployment and model conversion utilities
+
+## Main Implementation
+
+### Edge Runtime
+
+- Local microphone, wake-word, VAD, camera, speaker, and action coordination
+- WebSocket client for connecting the edge device to the server
+- Edge admin panel for status, logs, config inspection, hardware probes, and
+  allowlisted remote operations
+- Real SongJia serial gimbal driver for Atlas-connected servos
+- Face detection with YOLOv5-face OM on Ascend NPU
+- Face-to-gimbal horizontal tracking logic for robot head following
+
+### Server Runtime
+
+- FastAPI-based management service
+- Admin console at `/admin`
+- Edge device registry and WebSocket session management
+- Ragflow and Xinference connector aggregation
+- Model, knowledge-base, and remote-command API surface
 
 ## Quick Start
+
+### Edge
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[audio,servo,vision]"
 cp config/edge.example.yaml config/edge.yaml
 python -m ai_robot_edge --config config/edge.yaml
 ```
 
-The sample config runs in simulated mode by default. Replace
-`wake_word.keyword_id`, `server.bearer_token`, and device settings before
-deploying to hardware.
-
-## Documentation
-
-- `docs/edge_design.md`: edge architecture and runtime flows.
-- `docs/server_api_contract.md`: WebSocket protocol expected from the server.
-- `docs/build_plan.md`: staged implementation and validation plan.
-
-## GitHub Push Note
-
-The local GitHub token for `akihoti` was invalid during initial implementation.
-Local commits can be pushed after re-authentication:
+### Edge Admin
 
 ```bash
-gh auth login -h github.com
-git push -u origin main
+ai-robot-edge-admin --config config/edge.yaml
 ```
+
+### Server
+
+```bash
+cp config/server.example.yaml config/server.yaml
+ai-robot-server --config config/server.yaml
+```
+
+## Face Tracking
+
+The repository keeps one operational tracking entry script:
+
+```bash
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+/root/.conda/envs/ai-robot/bin/python -u scripts/run_face_gimbal_tracking.py --live --no-tilt-enabled --source /dev/video1
+```
+
+This script uses the edge config, loads the YOLOv5-face `.om` model, reads the
+camera stream, and drives the horizontal head servo in real time.
 
 ## Deployment
 
-See `docs/deployment.md` for Orange Pi deployment with `systemd + venv`.
+See `docs/deployment.md` for deployment on the Atlas edge device and the server.
 
-## Servo Status
-
-Servo control is represented by a safe `NoopServoController` in v1. See
-`docs/servo_todo.md` for the hardware details needed before implementing a real
-driver.
+Do not commit SSH passwords, access tokens, or model secrets into the
+repository.

@@ -9,20 +9,24 @@ description = "Edge service for an intelligent voice interaction robot"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "fastapi>=0.111",
+  "httpx>=0.27",
   "numpy>=1.24",
   "PyYAML>=6.0",
+  "uvicorn[standard]>=0.30",
   "websockets>=12.0",
 ]
 
 [project.optional-dependencies]
-dev = [
-  "pytest>=8.0",
+servo = [
+  "pyserial>=3.5",
 ]
 audio = [
   "sounddevice>=0.4.6",
 ]
 vision = [
   "opencv-python>=4.8",
+  "Pillow>=10.0",
 ]
 ascend = [
   "aclruntime>=0.0.2",
@@ -31,10 +35,9 @@ ascend = [
 
 [project.scripts]
 ai-robot-edge = "ai_robot_edge.__main__:main"
+ai-robot-edge-admin = "ai_robot_edge.admin.__main__:main"
+ai-robot-gimbal = "ai_robot_edge.devices.gimbal_cli:main"
+ai-robot-server = "ai_robot_server.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]

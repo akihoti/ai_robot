@@ -1,0 +1,16 @@
+[Unit]
+Description=AI Robot Server Console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=7203
+WorkingDirectory=/opt/ai_robot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/ai_robot/.venv/bin/ai-robot-server --config /etc/ai-robot/server.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

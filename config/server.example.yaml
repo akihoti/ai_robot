@@ -1,0 +1,21 @@
+http:
+  host: 0.0.0.0
+  port: 8010
+  # Set AI_ROBOT_ADMIN_TOKEN in deployment and copy it here or template it in.
+  admin_token: change-me
+
+ragflow:
+  # RAGFlow web/API endpoint on the server host.
+  base_url: "http://127.0.0.1:9381"
+  api_key: ""
+  timeout_seconds: 15
+
+xinference:
+  # Xinference API endpoint deployed with docker-compose-xinference-only.yml.
+  base_url: "http://127.0.0.1:9997"
+  api_key: ""
+  timeout_seconds: 15
+
+edge:
+  bearer_tokens:
+    atlas-200i-dk-a2-001: change-me

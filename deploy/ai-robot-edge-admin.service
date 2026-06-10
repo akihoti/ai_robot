@@ -1,0 +1,19 @@
+[Unit]
+Description=AI Robot Edge Admin Console
+After=network-online.target ai-robot-edge.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ai_robot
+Environment=PYTHONUNBUFFERED=1
+Environment=ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/latest
+Environment=LD_LIBRARY_PATH=/var/davinci/driver/lib64:/var/davinci/driver/lib64/common:/var/davinci/driver/lib64/driver:/usr/local/Ascend/ascend-toolkit/latest/lib64
+Environment=PYTHONPATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages
+ExecStart=/root/.conda/envs/ai-robot/bin/ai-robot-edge-admin --config /etc/ai-robot/edge.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

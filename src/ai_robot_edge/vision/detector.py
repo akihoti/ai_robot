@@ -72,6 +72,16 @@ class AclPersonDetector:
 
 def build_person_detector(config: EdgeConfig) -> PersonDetector:
     detector = config.vision.detector.lower()
+    if detector in {"yolov5-face-om", "yolov5_face_om", "face"}:
+        from .yolov5_face import YoloV5FaceOmDetector
+
+        return YoloV5FaceOmDetector(
+            config.vision.face_model_path,
+            input_size=config.vision.face_input_size,
+            confidence_threshold=config.vision.person_threshold,
+            iou_threshold=config.vision.face_iou_threshold,
+            device_id=config.vision.face_device_id,
+        )
     if detector == "acl" or (detector == "auto" and config.runtime.prefer_npu):
         return AclPersonDetector(config.vision.person_threshold)
     if detector == "cpu" or detector == "auto":
