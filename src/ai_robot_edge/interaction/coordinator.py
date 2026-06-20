@@ -5,7 +5,14 @@ import logging
 from time import monotonic
 
 from ..config import VisionConfig
-from ..events import ActionIntent, ActionName, VisionEvent, VisionEventType
+from ..events import (
+    ActionIntent,
+    ActionName,
+    ConversationEvent,
+    ConversationEventType,
+    VisionEvent,
+    VisionEventType,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -16,10 +23,12 @@ class InteractionCoordinator:
         vision_config: VisionConfig,
         vision_queue: asyncio.Queue[VisionEvent],
         action_queue: asyncio.Queue[ActionIntent],
+        conversation_queue: asyncio.Queue[ConversationEvent],
     ) -> None:
         self.vision_config = vision_config
         self.vision_queue = vision_queue
         self.action_queue = action_queue
+        self.conversation_queue = conversation_queue
         self._present_frames = 0
         self._last_welcome_at = -vision_config.welcome_cooldown_seconds
 
@@ -57,3 +66,9 @@ class InteractionCoordinator:
         )
         LOGGER.info("welcome triggered: %s", welcome_event)
         await self.action_queue.put(ActionIntent(name=ActionName.WELCOME_MOTION))
+        await self.conversation_queue.put(
+            ConversationEvent(
+                event_type=ConversationEventType.WELCOME,
+                vision_event=welcome_event,
+            )
+        )

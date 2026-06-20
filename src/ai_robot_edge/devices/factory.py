@@ -4,6 +4,7 @@ from ..config import EdgeConfig
 from .base import Camera, Microphone, ServoController, Speaker
 from .gimbal import PanTiltGimbal
 from .opencv_camera import OpenCvCamera
+from .sounddevice_audio import SoundDeviceMicrophone, SoundDeviceSpeaker
 from .simulated import (
     NoopServoController,
     SimulatedCamera,
@@ -28,6 +29,13 @@ def build_camera(config: EdgeConfig) -> Camera:
 
 
 def build_microphone(config: EdgeConfig) -> Microphone:
+    if config.runtime.mode != "simulated":
+        return SoundDeviceMicrophone(
+            sample_rate=config.microphone.sample_rate,
+            channels=config.microphone.channels,
+            frame_ms=config.microphone.frame_ms,
+            device=config.microphone.device,
+        )
     return SimulatedMicrophone(
         sample_rate=config.microphone.sample_rate,
         frame_ms=config.microphone.frame_ms,
@@ -35,6 +43,8 @@ def build_microphone(config: EdgeConfig) -> Microphone:
 
 
 def build_speaker(config: EdgeConfig) -> Speaker:
+    if config.runtime.mode != "simulated":
+        return SoundDeviceSpeaker()
     return SimulatedSpeaker()
 
 

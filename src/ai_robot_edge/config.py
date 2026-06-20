@@ -70,6 +70,13 @@ class VadConfig:
 
 
 @dataclass(frozen=True)
+class VoiceConfig:
+    visual_listen_timeout_ms: int
+    welcome_text: str
+    auto_listen_after_welcome: bool
+
+
+@dataclass(frozen=True)
 class SpeakerConfig:
     enabled: bool
     device: str | None
@@ -155,6 +162,7 @@ class EdgeConfig:
     microphone: MicrophoneConfig
     wake_word: WakeWordConfig
     vad: VadConfig
+    voice: VoiceConfig
     speaker: SpeakerConfig
     servo: ServoConfig
     tracking: TrackingConfig
@@ -189,6 +197,7 @@ def _parse_config(data: dict[str, Any]) -> EdgeConfig:
     microphone = data.get("microphone", {})
     wake_word = data.get("wake_word", {})
     vad = data.get("vad", {})
+    voice = data.get("voice", {})
     speaker = data.get("speaker", {})
     servo = data.get("servo", {})
     tracking = data.get("tracking", {})
@@ -269,6 +278,17 @@ def _parse_config(data: dict[str, Any]) -> EdgeConfig:
             silence_ms=int(vad.get("silence_ms", 800)),
             max_utterance_ms=int(vad.get("max_utterance_ms", 10000)),
             pre_roll_ms=int(vad.get("pre_roll_ms", 300)),
+        ),
+        voice=VoiceConfig(
+            visual_listen_timeout_ms=int(
+                voice.get("visual_listen_timeout_ms", 6000)
+            ),
+            welcome_text=str(
+                voice.get("welcome_text", "你好，我在这里。有什么可以帮你的吗？")
+            ),
+            auto_listen_after_welcome=bool(
+                voice.get("auto_listen_after_welcome", True)
+            ),
         ),
         speaker=SpeakerConfig(
             enabled=bool(speaker.get("enabled", True)),
@@ -386,6 +406,8 @@ def _validate_config(config: EdgeConfig) -> None:
         raise ValueError("wake_word.keyword_id is required when wake word is enabled")
     if config.microphone.channels != 1:
         raise ValueError("only mono microphone capture is supported in v1")
+    if config.voice.visual_listen_timeout_ms <= 0:
+        raise ValueError("voice.visual_listen_timeout_ms must be positive")
     if config.admin.enabled and not config.admin.auth_token:
         raise ValueError("admin.auth_token is required when admin is enabled")
     for name, axis in (("pan", config.servo.pan), ("tilt", config.servo.tilt)):

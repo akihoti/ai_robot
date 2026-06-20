@@ -8,3 +8,10 @@ artifacts/
 pretrain/
 root@10.90.67.45:/
 config/edge.yaml
+PROJECT_OVERVIEW.md
+Hardware/
+docs/build_plan.md
+docs/edge_design.md
+docs/servo_sdk.md
+docs/servo_todo.md
+docs/target_tracking_plan.md

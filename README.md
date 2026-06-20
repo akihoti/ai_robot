@@ -27,6 +27,7 @@ robot system.
 - Admin console at `/admin`
 - Edge device registry and WebSocket session management
 - Ragflow and Xinference connector aggregation
+- Voice gateway endpoints for `ASR -> RAGFlow -> TTS`
 - Model, knowledge-base, and remote-command API surface
 
 ## Quick Start

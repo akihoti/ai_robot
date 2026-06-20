@@ -1,0 +1,17 @@
+services:
+  ai-robot-server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    container_name: ai-robot-server
+    restart: unless-stopped
+    ports:
+      - "8010:8010"
+    volumes:
+      - ../config/server.yaml:/app/config/server.yaml:ro
+    networks:
+      - ai-net
+
+networks:
+  ai-net:
+    external: true

@@ -25,11 +25,28 @@ class EdgeAuthConfig:
 
 
 @dataclass(frozen=True)
+class VoiceGatewayConfig:
+    auth_token: str = ""
+    asr_model: str = ""
+    tts_model: str = ""
+    tts_voice: str = "zh"
+    ragflow_chat_id: str = ""
+    tts_media_type: str = "audio/wav"
+    welcome_text: str = "你好，我在这里。有什么可以帮你的吗？"
+    system_prompt: str = (
+        "你是机器人语音助手。请使用中文回答，尽量简短，适合语音播报。"
+        "优先基于知识库内容作答；如果知识库没有依据，请明确说你不确定，不要编造。"
+        "不要输出 Markdown 表格、长列表或代码块，除非用户明确要求。"
+    )
+
+
+@dataclass(frozen=True)
 class ServerAppConfig:
     http: HttpConfig
     ragflow: ConnectorConfig
     xinference: ConnectorConfig
     edge: EdgeAuthConfig
+    voice_gateway: VoiceGatewayConfig
 
 
 def load_server_config(path: str | Path) -> ServerAppConfig:
@@ -42,6 +59,7 @@ def parse_server_config(data: dict[str, Any]) -> ServerAppConfig:
     ragflow = data.get("ragflow", {})
     xinference = data.get("xinference", {})
     edge = data.get("edge", {})
+    voice_gateway = data.get("voice_gateway", {})
     bearer_tokens = edge.get("bearer_tokens", {})
     if bearer_tokens is None:
         bearer_tokens = {}
@@ -66,6 +84,28 @@ def parse_server_config(data: dict[str, Any]) -> ServerAppConfig:
         ),
         edge=EdgeAuthConfig(
             bearer_tokens={str(k): str(v) for k, v in bearer_tokens.items()}
+        ),
+        voice_gateway=VoiceGatewayConfig(
+            auth_token=str(voice_gateway.get("auth_token", "")),
+            asr_model=str(voice_gateway.get("asr_model", "")),
+            tts_model=str(voice_gateway.get("tts_model", "")),
+            tts_voice=str(voice_gateway.get("tts_voice", "zh")),
+            ragflow_chat_id=str(voice_gateway.get("ragflow_chat_id", "")),
+            tts_media_type=str(voice_gateway.get("tts_media_type", "audio/wav")),
+            welcome_text=str(
+                voice_gateway.get(
+                    "welcome_text",
+                    "你好，我在这里。有什么可以帮你的吗？",
+                )
+            ),
+            system_prompt=str(
+                voice_gateway.get(
+                    "system_prompt",
+                    "你是机器人语音助手。请使用中文回答，尽量简短，适合语音播报。"
+                    "优先基于知识库内容作答；如果知识库没有依据，请明确说你不确定，不要编造。"
+                    "不要输出 Markdown 表格、长列表或代码块，除非用户明确要求。",
+                )
+            ),
         ),
     )
 

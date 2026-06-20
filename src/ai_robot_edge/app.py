@@ -4,17 +4,11 @@ import asyncio
 import logging
 
 from .audio.vad import EnergyVadSegmenter
-from .audio.wake_word import build_wake_word_detector
 from .audio.worker import AudioWorker
 from .config import EdgeConfig
 from .actions import ActionDispatcher
-from .devices.factory import (
-    build_camera,
-    build_microphone,
-    build_servo_controller,
-    build_speaker,
-)
-from .events import ActionIntent, Utterance, VisionEvent
+from .devices.factory import build_camera, build_microphone, build_servo_controller, build_speaker
+from .events import ActionIntent, ConversationEvent, Utterance, VisionEvent
 from .interaction import InteractionCoordinator
 from .playback import PlaybackWorker, TtsChunk
 from .server import ConversationClient, ConversationWorker, ManagementClient
@@ -38,7 +32,10 @@ class EdgeApp:
         vision_queue: asyncio.Queue[VisionEvent] = asyncio.Queue(maxsize=32)
         action_queue: asyncio.Queue[ActionIntent] = asyncio.Queue(maxsize=32)
         utterance_queue: asyncio.Queue[Utterance] = asyncio.Queue(maxsize=8)
+        conversation_queue: asyncio.Queue[ConversationEvent] = asyncio.Queue(maxsize=8)
         tts_queue: asyncio.Queue[TtsChunk] = asyncio.Queue(maxsize=32)
+        playback_idle = asyncio.Event()
+        playback_idle.set()
         tasks: list[asyncio.Task] = []
         servo_controller = build_servo_controller(self.config)
         detector = None
@@ -59,12 +56,13 @@ class EdgeApp:
                 tracker=tracker,
             )
             tasks.append(asyncio.create_task(worker.run(), name="camera-worker"))
-        if self.config.microphone.enabled and self.config.wake_word.enabled:
+        audio_worker: AudioWorker | None = None
+        if self.config.microphone.enabled:
             audio_worker = AudioWorker(
                 microphone=build_microphone(self.config),
-                wake_word=build_wake_word_detector(self.config.wake_word),
                 vad=EnergyVadSegmenter(self.config.vad),
                 utterance_queue=utterance_queue,
+                listen_timeout_ms=self.config.voice.visual_listen_timeout_ms,
             )
             tasks.append(asyncio.create_task(audio_worker.run(), name="audio-worker"))
 
@@ -72,6 +70,7 @@ class EdgeApp:
             vision_config=self.config.vision,
             vision_queue=vision_queue,
             action_queue=action_queue,
+            conversation_queue=conversation_queue,
         )
         dispatcher = ActionDispatcher(
             action_queue=action_queue,
@@ -81,14 +80,25 @@ class EdgeApp:
         tasks.append(asyncio.create_task(dispatcher.run(), name="actions"))
         conversation_client = ConversationClient(
             config=self.config,
-            on_tts=lambda audio, sample_rate, channels: tts_queue.put(
-                TtsChunk(audio=audio, sample_rate=sample_rate, channels=channels)
+            on_tts=lambda audio, sample_rate, channels, media_type: tts_queue.put(
+                TtsChunk(
+                    audio=audio,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    media_type=media_type,
+                )
             ),
             on_action=action_queue.put,
         )
         conversation_worker = ConversationWorker(
             utterance_queue=utterance_queue,
+            conversation_queue=conversation_queue,
             client=conversation_client,
+            playback_idle=playback_idle,
+            auto_listen_after_welcome=self.config.voice.auto_listen_after_welcome,
+            arm_listening_window=(
+                audio_worker.arm_listening_window if audio_worker is not None else lambda: None
+            ),
         )
         tasks.append(asyncio.create_task(conversation_worker.run(), name="conversation"))
         if self.config.admin.enabled:
@@ -102,6 +112,7 @@ class EdgeApp:
             playback_worker = PlaybackWorker(
                 queue=tts_queue,
                 speaker=build_speaker(self.config),
+                idle_event=playback_idle,
             )
             tasks.append(asyncio.create_task(playback_worker.run(), name="playback"))
         try:

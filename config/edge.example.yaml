@@ -55,6 +55,11 @@ vad:
   max_utterance_ms: 10000
   pre_roll_ms: 300
 
+voice:
+  visual_listen_timeout_ms: 6000
+  welcome_text: "你好，我在这里。有什么可以帮你的吗？"
+  auto_listen_after_welcome: true
+
 speaker:
   enabled: true
   device: null

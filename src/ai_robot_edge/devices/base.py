@@ -20,7 +20,13 @@ class Microphone(ABC):
 
 class Speaker(ABC):
     @abstractmethod
-    async def play(self, audio: bytes, sample_rate: int, channels: int = 1) -> None:
+    async def play(
+        self,
+        audio: bytes,
+        sample_rate: int,
+        channels: int = 1,
+        media_type: str = "audio/pcm",
+    ) -> None:
         """Play one audio chunk."""
 
 

@@ -9,6 +9,7 @@ from typing import Any
 class EdgeDevice:
     device_id: str
     online: bool = False
+    connection_count: int = 0
     last_seen_ms: int | None = None
     status: dict[str, Any] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
@@ -29,11 +30,15 @@ class EdgeDeviceRegistry:
 
     def mark_online(self, device_id: str) -> None:
         device = self.get_device(device_id)
+        device.connection_count += 1
         device.online = True
         self._command_queues.setdefault(device_id, asyncio.Queue(maxsize=32))
 
     def mark_offline(self, device_id: str) -> None:
-        self.get_device(device_id).online = False
+        device = self.get_device(device_id)
+        if device.connection_count > 0:
+            device.connection_count -= 1
+        device.online = device.connection_count > 0
 
     def update_status(self, device_id: str, status: dict[str, Any]) -> None:
         device = self.get_device(device_id)

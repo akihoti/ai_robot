@@ -1,16 +1,33 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from .connectors import RagflowClient, XinferenceClient
+from .config import VoiceGatewayConfig
+
+
+@dataclass(frozen=True)
+class VoiceGatewayResult:
+    question: str
+    answer: str
+    audio_bytes: bytes
+    media_type: str
+    rag_response: dict[str, Any]
 
 
 class ConversationOrchestrator:
-    """Coordinates model and knowledge-base calls for management test queries."""
+    """Coordinates management queries and the voice gateway pipeline."""
 
-    def __init__(self, ragflow: RagflowClient, xinference: XinferenceClient) -> None:
+    def __init__(
+        self,
+        ragflow: RagflowClient,
+        xinference: XinferenceClient,
+        voice_gateway: VoiceGatewayConfig,
+    ) -> None:
         self.ragflow = ragflow
         self.xinference = xinference
+        self.voice_gateway = voice_gateway
 
     async def query(self, question: str, context: dict[str, Any]) -> dict[str, Any]:
         if self.ragflow.configured:
@@ -22,3 +39,114 @@ class ConversationOrchestrator:
             "models": models,
             "message": "ragflow is not configured; query was not sent",
         }
+
+    async def text_chat(self, question: str, context: dict[str, Any]) -> dict[str, Any]:
+        self._validate_voice_gateway()
+        answer, rag_response = await self.answer_question(question, context)
+        return {
+            "question": question,
+            "answer": answer,
+            "rag_response": rag_response,
+        }
+
+    async def voice_chat(
+        self,
+        *,
+        filename: str,
+        audio_bytes: bytes,
+        content_type: str,
+        context: dict[str, Any],
+    ) -> VoiceGatewayResult:
+        self._validate_voice_gateway()
+        question = await self.transcribe_audio(
+            filename=filename,
+            audio_bytes=audio_bytes,
+            content_type=content_type,
+        )
+        answer, rag_response = await self.answer_question(question, context)
+        audio_out, media_type = await self.synthesize_text(answer)
+        return VoiceGatewayResult(
+            question=question,
+            answer=answer,
+            audio_bytes=audio_out,
+            media_type=media_type or self.voice_gateway.tts_media_type,
+            rag_response=rag_response,
+        )
+
+    async def transcribe_audio(
+        self,
+        *,
+        filename: str,
+        audio_bytes: bytes,
+        content_type: str,
+    ) -> str:
+        self._validate_voice_gateway()
+        asr_response = await self.xinference.transcribe_audio(
+            model=self.voice_gateway.asr_model,
+            filename=filename,
+            audio_bytes=audio_bytes,
+            content_type=content_type,
+        )
+        return _extract_asr_text(asr_response)
+
+    async def answer_question(
+        self,
+        question: str,
+        context: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        self._validate_voice_gateway()
+        payload = dict(context or {})
+        payload.setdefault("system_prompt", self.voice_gateway.system_prompt)
+        rag_response = await self.ragflow.query_chat(
+            chat_id=self.voice_gateway.ragflow_chat_id,
+            question=question,
+            payload=payload,
+        )
+        answer = _extract_ragflow_answer(rag_response)
+        return answer, rag_response
+
+    async def synthesize_text(self, text: str) -> tuple[bytes, str]:
+        self._validate_voice_gateway()
+        return await self.xinference.synthesize_speech(
+            model=self.voice_gateway.tts_model,
+            text=text,
+            voice=self.voice_gateway.tts_voice,
+        )
+
+    async def build_welcome_audio(self, text: str | None = None) -> tuple[str, bytes, str]:
+        welcome_text = (text or self.voice_gateway.welcome_text).strip()
+        if not welcome_text:
+            raise ValueError("welcome text is empty")
+        audio_out, media_type = await self.synthesize_text(welcome_text)
+        return welcome_text, audio_out, media_type or self.voice_gateway.tts_media_type
+
+    def _validate_voice_gateway(self) -> None:
+        if not self.ragflow.configured:
+            raise ValueError("ragflow is not configured")
+        if not self.xinference.configured:
+            raise ValueError("xinference is not configured")
+        if not self.voice_gateway.asr_model:
+            raise ValueError("voice_gateway.asr_model is not configured")
+        if not self.voice_gateway.tts_model:
+            raise ValueError("voice_gateway.tts_model is not configured")
+        if not self.voice_gateway.ragflow_chat_id:
+            raise ValueError("voice_gateway.ragflow_chat_id is not configured")
+
+
+def _extract_asr_text(asr_response: dict[str, Any]) -> str:
+    question = str(
+        asr_response.get("text") or asr_response.get("data") or ""
+    ).strip()
+    if not question:
+        raise ValueError(f"ASR returned empty text: {asr_response}")
+    return question
+
+
+def _extract_ragflow_answer(rag_response: dict[str, Any]) -> str:
+    try:
+        answer = str(rag_response["choices"][0]["message"]["content"]).strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError(f"Unexpected RAGFlow response: {rag_response}") from exc
+    if not answer:
+        raise ValueError("RAGFlow returned empty answer")
+    return answer

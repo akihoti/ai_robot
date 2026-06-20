@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import time
+import wave
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from .config import ServerAppConfig
 from .connectors import RagflowClient, XinferenceClient
@@ -20,7 +23,7 @@ def create_app(config: ServerAppConfig) -> FastAPI:
     xinference = XinferenceClient(config.xinference)
     ragflow = RagflowClient(config.ragflow)
     commands = RemoteCommandService(registry)
-    orchestrator = ConversationOrchestrator(ragflow, xinference)
+    orchestrator = ConversationOrchestrator(ragflow, xinference, config.voice_gateway)
 
     async def require_admin(
         authorization: Optional[str] = Header(default=None),
@@ -44,6 +47,15 @@ def create_app(config: ServerAppConfig) -> FastAPI:
             "service": "ai-robot-server",
             "connectors": [status.__dict__ for status in statuses],
         }
+
+    async def require_gateway(
+        authorization: Optional[str] = Header(default=None),
+    ) -> None:
+        expected = config.voice_gateway.auth_token
+        if not expected:
+            return
+        if _extract_token(authorization) != expected:
+            raise HTTPException(status_code=401, detail="invalid gateway token")
 
     @app.get("/api/v1/devices", dependencies=[Depends(require_admin)])
     async def devices() -> list[dict[str, Any]]:
@@ -79,6 +91,65 @@ def create_app(config: ServerAppConfig) -> FastAPI:
             raise HTTPException(status_code=400, detail="question is required")
         return await orchestrator.query(question, payload)
 
+    @app.get("/api/v1/voice-gateway/health", dependencies=[Depends(require_gateway)])
+    async def voice_gateway_health() -> dict[str, Any]:
+        statuses = await asyncio.gather(ragflow.health(), xinference.health())
+        return {
+            "ok": all(status.reachable for status in statuses),
+            "service": "voice-gateway",
+            "connectors": [status.__dict__ for status in statuses],
+            "configured": {
+                "asr_model": config.voice_gateway.asr_model,
+                "tts_model": config.voice_gateway.tts_model,
+                "tts_voice": config.voice_gateway.tts_voice,
+                "ragflow_chat_id": config.voice_gateway.ragflow_chat_id,
+            },
+        }
+
+    @app.post("/api/v1/voice-gateway/text-chat", dependencies=[Depends(require_gateway)])
+    async def voice_gateway_text_chat(payload: dict[str, Any]) -> JSONResponse:
+        question = str(payload.get("question", "")).strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="question is required")
+        response = await orchestrator.text_chat(question, payload)
+        return JSONResponse(response)
+
+    @app.post("/api/v1/voice-gateway/voice-chat", dependencies=[Depends(require_gateway)])
+    async def voice_gateway_voice_chat(file: UploadFile = File(...)) -> Response:
+        audio_bytes = await file.read()
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="uploaded audio is empty")
+        result = await orchestrator.voice_chat(
+            filename=file.filename or "audio.wav",
+            audio_bytes=audio_bytes,
+            content_type=file.content_type or "application/octet-stream",
+            context={},
+        )
+        return Response(
+            content=result.audio_bytes,
+            media_type=result.media_type or config.voice_gateway.tts_media_type,
+            headers={
+                "X-ASR-Text": result.question.encode(
+                    "utf-8", errors="ignore"
+                ).hex(),
+                "X-Answer-Text": result.answer.encode(
+                    "utf-8", errors="ignore"
+                ).hex(),
+            },
+        )
+
+    @app.get("/health", dependencies=[Depends(require_gateway)])
+    async def compatibility_health() -> dict[str, Any]:
+        return await voice_gateway_health()
+
+    @app.post("/text-chat", dependencies=[Depends(require_gateway)])
+    async def compatibility_text_chat(payload: dict[str, Any]) -> JSONResponse:
+        return await voice_gateway_text_chat(payload)
+
+    @app.post("/voice-chat", dependencies=[Depends(require_gateway)])
+    async def compatibility_voice_chat(file: UploadFile = File(...)) -> Response:
+        return await voice_gateway_voice_chat(file)
+
     @app.post(
         "/api/v1/devices/{device_id}/commands",
         dependencies=[Depends(require_admin)],
@@ -99,18 +170,33 @@ def create_app(config: ServerAppConfig) -> FastAPI:
             return
         await websocket.accept()
         registry.mark_online(device_id)
-        command_task = asyncio.create_task(_send_commands(websocket, registry, device_id))
+        command_task: asyncio.Task | None = None
+        conversation = _EdgeConversationSession(
+            device_id=device_id,
+            orchestrator=orchestrator,
+        )
         try:
             while True:
                 message = await websocket.receive()
                 if "text" in message and message["text"] is not None:
-                    await _handle_edge_text(registry, device_id, message["text"])
+                    frame_type = await _handle_edge_text(
+                        registry,
+                        device_id,
+                        message["text"],
+                        websocket,
+                        conversation,
+                    )
+                    if frame_type == "device.status" and command_task is None:
+                        command_task = asyncio.create_task(
+                            _send_commands(websocket, registry, device_id)
+                        )
                 elif "bytes" in message and message["bytes"] is not None:
-                    continue
+                    conversation.handle_audio_bytes(message["bytes"])
                 else:
                     break
         finally:
-            command_task.cancel()
+            if command_task is not None:
+                command_task.cancel()
             registry.mark_offline(device_id)
 
     return app
@@ -125,13 +211,17 @@ async def _send_commands(
 
 
 async def _handle_edge_text(
-    registry: EdgeDeviceRegistry, device_id: str, raw_message: str
-) -> None:
+    registry: EdgeDeviceRegistry,
+    device_id: str,
+    raw_message: str,
+    websocket: WebSocket,
+    conversation: "_EdgeConversationSession",
+) -> str | None:
     try:
         envelope = json.loads(raw_message)
     except json.JSONDecodeError:
         registry.add_log(device_id, f"invalid json frame: {raw_message[:80]}")
-        return
+        return None
     frame_type = envelope.get("type")
     payload = envelope.get("payload", {})
     if frame_type == "device.status" and isinstance(payload, dict):
@@ -140,8 +230,15 @@ async def _handle_edge_text(
         registry.add_log(device_id, json.dumps(envelope, ensure_ascii=False))
     elif frame_type == "session.start":
         registry.add_log(device_id, "conversation session started")
+        conversation.start(envelope)
+    elif frame_type == "audio.chunk":
+        conversation.note_chunk(payload)
     elif frame_type == "audio.end":
         registry.add_log(device_id, "conversation audio ended")
+        await conversation.finish_audio(websocket, payload)
+    elif frame_type == "event.vision":
+        await conversation.handle_vision_event(websocket, envelope)
+    return frame_type
 
 
 def _edge_token_is_valid(
@@ -161,6 +258,201 @@ def _extract_token(authorization: Optional[str]) -> Optional[str]:
     if authorization.startswith(prefix):
         return authorization[len(prefix) :]
     return authorization
+
+
+class _EdgeConversationSession:
+    def __init__(
+        self,
+        *,
+        device_id: str,
+        orchestrator: ConversationOrchestrator,
+    ) -> None:
+        self.device_id = device_id
+        self.orchestrator = orchestrator
+        self.request_id = ""
+        self.sample_rate = 16000
+        self.channels = 1
+        self.audio_buffer = bytearray()
+
+    def start(self, envelope: dict[str, Any]) -> None:
+        payload = envelope.get("payload", {})
+        audio = payload.get("audio", {})
+        self.request_id = str(envelope.get("request_id", "")).strip()
+        self.sample_rate = int(audio.get("sample_rate", 16000))
+        self.channels = int(audio.get("channels", 1))
+        self.audio_buffer.clear()
+
+    def note_chunk(self, _payload: dict[str, Any]) -> None:
+        return None
+
+    def handle_audio_bytes(self, data: bytes) -> None:
+        self.audio_buffer.extend(data)
+
+    async def finish_audio(
+        self,
+        websocket: WebSocket,
+        payload: dict[str, Any],
+    ) -> None:
+        if not self.audio_buffer:
+            await _send_error_frame(
+                websocket,
+                request_id=self.request_id,
+                code="asr_failed",
+                message="audio payload is empty",
+                retryable=True,
+            )
+            return
+        try:
+            wav_bytes = _pcm16_to_wav(
+                bytes(self.audio_buffer),
+                sample_rate=self.sample_rate,
+                channels=self.channels,
+            )
+            question = await self.orchestrator.transcribe_audio(
+                filename="utterance.wav",
+                audio_bytes=wav_bytes,
+                content_type="audio/wav",
+            )
+            if not question.strip():
+                raise ValueError("ASR returned empty text")
+            await websocket.send_text(
+                _frame(
+                    "asr.final",
+                    self.request_id,
+                    {"text": question, "reason": payload.get("reason", "vad_silence")},
+                )
+            )
+            answer, rag_response = await self.orchestrator.answer_question(question, {})
+            await websocket.send_text(
+                _frame(
+                    "llm.final",
+                    self.request_id,
+                    {
+                        "text": answer,
+                        "rag_sources": rag_response.get("references", []),
+                    },
+                )
+            )
+            audio_out, media_type = await self.orchestrator.synthesize_text(answer)
+            resolved_media_type = media_type or "audio/wav"
+            await websocket.send_text(
+                _frame(
+                    "tts.chunk",
+                    self.request_id,
+                    {
+                        "sequence": 1,
+                        "encoding": (
+                            "wav"
+                            if "wav" in resolved_media_type.lower()
+                            else "pcm_s16le"
+                        ),
+                        "sample_rate": self.sample_rate,
+                        "channels": self.channels,
+                        "is_final": True,
+                        "media_type": resolved_media_type,
+                    },
+                )
+            )
+            await websocket.send_bytes(audio_out)
+        except Exception as exc:
+            await _send_error_frame(
+                websocket,
+                request_id=self.request_id,
+                code="conversation_failed",
+                message=str(exc),
+                retryable=True,
+            )
+        finally:
+            self.audio_buffer.clear()
+
+    async def handle_vision_event(
+        self,
+        websocket: WebSocket,
+        envelope: dict[str, Any],
+    ) -> None:
+        payload = envelope.get("payload", {})
+        request_id = str(envelope.get("request_id", ""))
+        if payload.get("event") != "welcome_triggered":
+            return
+        try:
+            welcome_text, audio_out, media_type = await self.orchestrator.build_welcome_audio(
+                str(payload.get("welcome_text", "")).strip() or None
+            )
+            resolved_media_type = media_type or "audio/wav"
+            await websocket.send_text(
+                _frame("llm.final", request_id, {"text": welcome_text, "rag_sources": []})
+            )
+            await websocket.send_text(
+                _frame(
+                    "tts.chunk",
+                    request_id,
+                    {
+                        "sequence": 1,
+                        "encoding": (
+                            "wav"
+                            if "wav" in resolved_media_type.lower()
+                            else "pcm_s16le"
+                        ),
+                        "sample_rate": self.sample_rate,
+                        "channels": self.channels,
+                        "is_final": True,
+                        "media_type": resolved_media_type,
+                    },
+                )
+            )
+            await websocket.send_bytes(audio_out)
+        except Exception as exc:
+            await _send_error_frame(
+                websocket,
+                request_id=request_id,
+                code="welcome_failed",
+                message=str(exc),
+                retryable=True,
+            )
+
+
+def _pcm16_to_wav(audio_bytes: bytes, *, sample_rate: int, channels: int) -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(audio_bytes)
+    return buffer.getvalue()
+
+
+async def _send_error_frame(
+    websocket: WebSocket,
+    *,
+    request_id: str,
+    code: str,
+    message: str,
+    retryable: bool,
+) -> None:
+    await websocket.send_text(
+        _frame(
+            "error",
+            request_id,
+            {
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+                "speak_text": "我刚刚没有处理好，请再说一次。",
+            },
+        )
+    )
+
+
+def _frame(frame_type: str, request_id: str, payload: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "type": frame_type,
+            "request_id": request_id,
+            "timestamp_ms": int(time.time() * 1000),
+            "payload": payload,
+        },
+        ensure_ascii=False,
+    )
 
 
 SERVER_ADMIN_HTML = """<!doctype html>

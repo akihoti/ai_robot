@@ -30,6 +30,8 @@ Edit `/etc/ai-robot/server.yaml`:
 - set `ragflow.base_url` to `http://10.88.129.172:9381`;
 - set `xinference.base_url` to `http://10.88.129.172:9997`;
 - set `ragflow.api_key` and `xinference.api_key` if those services require auth;
+- set `voice_gateway.auth_token` for edge-to-server voice requests;
+- set `voice_gateway.asr_model`, `voice_gateway.tts_model`, and `voice_gateway.ragflow_chat_id`;
 - set `edge.bearer_tokens` for every edge device.
 
 Enable and inspect:
@@ -44,6 +46,27 @@ Open:
 ```text
 http://10.88.129.172:8010/admin
 ```
+
+Voice gateway endpoints are served by the same process:
+
+```text
+GET  /api/v1/voice-gateway/health
+POST /api/v1/voice-gateway/text-chat
+POST /api/v1/voice-gateway/voice-chat
+```
+
+If the remote host is already Docker-based, you can run the same service as a
+container attached to the existing external network `ai-net`:
+
+```bash
+cp config/server.example.yaml config/server.yaml
+docker compose -f deploy/docker-compose.server.yml up -d --build
+```
+
+Inside Docker, point the upstreams at container aliases on `ai-net`:
+
+- `ragflow.base_url: http://ragflow`
+- `xinference.base_url: http://xinference:9997`
 
 Restart the standalone Xinference deployment when needed:
 
@@ -125,3 +148,16 @@ when only validating the camera/welcome loop.
 - WebSocket client sends `session.start`, audio chunks, and `audio.end`.
 - TTS chunks reach the speaker implementation.
 - Action intents reach the Noop servo controller.
+
+## 5. Voice Gateway Services
+
+For the current scope, the remote host only needs these server-side services:
+
+- `ai-robot-server`: gateway API and management API.
+- `xinference-server`: ASR and TTS.
+- `ragflow`: retrieval and answer generation.
+
+Optional additions:
+
+- reverse proxy for TLS and unified ingress;
+- Redis or a queue only if you later need async buffering or higher concurrency.

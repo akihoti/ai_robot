@@ -24,6 +24,10 @@ class ActionName(str, Enum):
     WELCOME_MOTION = "welcome_motion"
 
 
+class ConversationEventType(str, Enum):
+    WELCOME = "welcome"
+
+
 @dataclass(frozen=True)
 class CameraFrame:
     data: Any
@@ -75,3 +79,10 @@ class ActionIntent:
     name: ActionName
     parameters: dict[str, Any] = field(default_factory=dict)
     request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ConversationEvent:
+    event_type: ConversationEventType
+    vision_event: VisionEvent | None = None
+    request_id: str = field(default_factory=lambda: str(uuid4()))

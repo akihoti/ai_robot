@@ -16,6 +16,19 @@ xinference:
   api_key: ""
   timeout_seconds: 15
 
+voice_gateway:
+  # Separate bearer token for edge-to-server voice calls.
+  auth_token: ""
+  # Xinference ASR and TTS model names.
+  asr_model: ""
+  tts_model: ""
+  tts_voice: "zh"
+  # RAGFlow chat assistant id used by /api/v1/voice-gateway/*
+  ragflow_chat_id: ""
+  tts_media_type: "audio/wav"
+  welcome_text: "你好，我在这里。有什么可以帮你的吗？"
+  system_prompt: "你是机器人语音助手。请使用中文回答，尽量简短，适合语音播报。优先基于知识库内容作答；如果知识库没有依据，请明确说你不确定，不要编造。不要输出 Markdown 表格、长列表或代码块，除非用户明确要求。"
+
 edge:
   bearer_tokens:
     atlas-200i-dk-a2-001: change-me

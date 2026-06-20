@@ -113,6 +113,47 @@ class XinferenceClient(BaseConnector):
         response.raise_for_status()
         return {"ok": True, "upstream": response.json()}
 
+    async def transcribe_audio(
+        self,
+        *,
+        model: str,
+        filename: str,
+        audio_bytes: bytes,
+        content_type: str,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
+            response = await client.post(
+                f"{self.config.base_url}/v1/audio/transcriptions",
+                headers=self._headers(),
+                data={"model": model},
+                files={
+                    "file": (
+                        filename,
+                        audio_bytes,
+                        content_type or "application/octet-stream",
+                    )
+                },
+            )
+        response.raise_for_status()
+        return response.json()
+
+    async def synthesize_speech(
+        self,
+        *,
+        model: str,
+        text: str,
+        voice: str,
+    ) -> tuple[bytes, str]:
+        async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
+            response = await client.post(
+                f"{self.config.base_url}/v1/audio/speech",
+                headers=self._headers() | {"Content-Type": "application/json"},
+                json={"model": model, "input": text, "voice": voice},
+            )
+        response.raise_for_status()
+        media_type = response.headers.get("content-type", "audio/mpeg")
+        return response.content, media_type
+
 
 class RagflowClient(BaseConnector):
     name = "ragflow"
@@ -167,6 +208,32 @@ class RagflowClient(BaseConnector):
                 f"{self.config.base_url}/api/v1/chats/completions",
                 headers=self._headers(),
                 json={"question": question, **payload},
+            )
+        response.raise_for_status()
+        return response.json()
+
+    async def query_chat(
+        self, *, chat_id: str, question: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        messages: list[dict[str, Any]] = []
+        system_prompt = str(payload.get("system_prompt", "")).strip()
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": question})
+        async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
+            response = await client.post(
+                f"{self.config.base_url}/api/v1/openai/{chat_id}/chat/completions",
+                headers=self._headers() | {"Content-Type": "application/json"},
+                json={
+                    "model": payload.get("model", "model"),
+                    "messages": messages,
+                    "stream": False,
+                    **{
+                        k: v
+                        for k, v in payload.items()
+                        if k not in {"question", "system_prompt"}
+                    },
+                },
             )
         response.raise_for_status()
         return response.json()
