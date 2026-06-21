@@ -29,7 +29,7 @@ class VoiceGatewayConfig:
     auth_token: str = ""
     asr_model: str = ""
     tts_model: str = ""
-    tts_voice: str = "zh"
+    tts_voice: str = ""
     ragflow_chat_id: str = ""
     tts_media_type: str = "audio/wav"
     welcome_text: str = "你好，我在这里。有什么可以帮你的吗？"
@@ -89,7 +89,7 @@ def parse_server_config(data: dict[str, Any]) -> ServerAppConfig:
             auth_token=str(voice_gateway.get("auth_token", "")),
             asr_model=str(voice_gateway.get("asr_model", "")),
             tts_model=str(voice_gateway.get("tts_model", "")),
-            tts_voice=str(voice_gateway.get("tts_voice", "zh")),
+            tts_voice=str(voice_gateway.get("tts_voice", "")),
             ragflow_chat_id=str(voice_gateway.get("ragflow_chat_id", "")),
             tts_media_type=str(voice_gateway.get("tts_media_type", "audio/wav")),
             welcome_text=str(

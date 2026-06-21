@@ -90,6 +90,11 @@ class SoundDeviceSpeaker(Speaker):
             actual_channels,
         )
 
+    async def stop(self) -> None:
+        import sounddevice as sd  # type: ignore
+
+        await asyncio.to_thread(sd.stop)
+
 
 def _decode_audio(
     audio: bytes,

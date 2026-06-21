@@ -67,6 +67,20 @@ def select_tracking_target(
     return max(targets, key=score)
 
 
+def select_locked_target(
+    targets: list[TrackingTarget],
+    *,
+    locked_target: TrackingTarget,
+    closeness_threshold: float = 0.75,
+) -> TrackingTarget | None:
+    if not targets:
+        return None
+    best_match = max(targets, key=lambda target: _target_closeness(locked_target, target))
+    if _target_closeness(locked_target, best_match) < closeness_threshold:
+        return None
+    return best_match
+
+
 class _PIDAxis:
     """Single-axis PID controller with anti-windup and output clamping."""
 
@@ -158,6 +172,7 @@ class PanTiltTracker:
         self._centered_after_loss = False
         self._last_target: TrackingTarget | None = None
         self._last_target_sample_ms: float | None = None
+        self._locked_target_last_seen_ms: float | None = None
         self._last_raw_error_x: float | None = None
         self._last_raw_error_y: float | None = None
         self._last_pan_delta: float = 0.0
@@ -192,18 +207,14 @@ class PanTiltTracker:
         *,
         target_age_ms: float = 0.0,
     ) -> TrackingDecision | None:
-        target = select_tracking_target(
-            targets,
-            previous_target=self._last_target,
-            stickiness=self.config.target_stickiness,
-        )
+        now_ms = self._clock() * 1000
+        target = self._select_target(targets, now_ms=now_ms)
         if target is None or frame_width <= 0 or frame_height <= 0:
             return None
         self._target_lost_at_ms = None
         self._centered_after_loss = False
         self._last_target = target
-
-        now_ms = self._clock() * 1000
+        self._locked_target_last_seen_ms = now_ms
 
         error_x = (target.center_x - frame_width / 2) / (frame_width / 2)
         error_y = (target.center_y - frame_height / 2) / (frame_height / 2)
@@ -295,10 +306,45 @@ class PanTiltTracker:
         self._tilt_pid.reset()
         self._last_target = None
         self._last_target_sample_ms = None
+        self._locked_target_last_seen_ms = None
         self._last_raw_error_x = None
         self._last_raw_error_y = None
         self._last_pan_delta = 0.0
         self._last_tilt_delta = 0.0
+
+    def _select_target(
+        self,
+        targets: list[TrackingTarget],
+        *,
+        now_ms: float,
+    ) -> TrackingTarget | None:
+        baseline = select_tracking_target(
+            targets,
+            previous_target=self._last_target,
+            stickiness=self.config.target_stickiness,
+        )
+        if baseline is None or self._last_target is None:
+            return baseline
+
+        locked_target = select_locked_target(
+            targets,
+            locked_target=self._last_target,
+        )
+        if locked_target is not None:
+            return locked_target
+
+        if self.config.target_lock_timeout_ms <= 0:
+            return baseline
+        if self._locked_target_last_seen_ms is None:
+            return baseline
+        if now_ms - self._locked_target_last_seen_ms < self.config.target_lock_timeout_ms:
+            LOGGER.debug(
+                "holding target lock for %.0fms more before switching",
+                self.config.target_lock_timeout_ms
+                - (now_ms - self._locked_target_last_seen_ms),
+            )
+            return None
+        return baseline
 
     def _predict_errors(
         self,

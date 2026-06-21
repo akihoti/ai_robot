@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -144,11 +146,14 @@ class XinferenceClient(BaseConnector):
         text: str,
         voice: str,
     ) -> tuple[bytes, str]:
+        payload: dict[str, Any] = {"model": model, "input": text}
+        if voice.strip():
+            payload["voice"] = voice
         async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
             response = await client.post(
                 f"{self.config.base_url}/v1/audio/speech",
                 headers=self._headers() | {"Content-Type": "application/json"},
-                json={"model": model, "input": text, "voice": voice},
+                json=payload,
             )
         response.raise_for_status()
         media_type = response.headers.get("content-type", "audio/mpeg")
@@ -215,11 +220,7 @@ class RagflowClient(BaseConnector):
     async def query_chat(
         self, *, chat_id: str, question: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        messages: list[dict[str, Any]] = []
-        system_prompt = str(payload.get("system_prompt", "")).strip()
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": question})
+        messages = _build_chat_messages(question, payload)
         async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
             response = await client.post(
                 f"{self.config.base_url}/api/v1/openai/{chat_id}/chat/completions",
@@ -228,15 +229,49 @@ class RagflowClient(BaseConnector):
                     "model": payload.get("model", "model"),
                     "messages": messages,
                     "stream": False,
-                    **{
-                        k: v
-                        for k, v in payload.items()
-                        if k not in {"question", "system_prompt"}
-                    },
+                    **_chat_passthrough_payload(payload),
                 },
             )
         response.raise_for_status()
         return response.json()
+
+    async def stream_query_chat(
+        self, *, chat_id: str, question: str, payload: dict[str, Any]
+    ) -> AsyncIterator[str]:
+        messages = _build_chat_messages(question, payload)
+        timeout = httpx.Timeout(
+            connect=self.config.timeout_seconds,
+            read=120.0,
+            write=self.config.timeout_seconds,
+            pool=self.config.timeout_seconds,
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(
+                "POST",
+                f"{self.config.base_url}/api/v1/openai/{chat_id}/chat/completions",
+                headers=self._headers() | {"Content-Type": "application/json"},
+                json={
+                    "model": payload.get("model", "model"),
+                    "messages": messages,
+                    "stream": True,
+                    **_chat_passthrough_payload(payload),
+                },
+            ) as response:
+                response.raise_for_status()
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    text = _extract_stream_delta_text(chunk)
+                    if text:
+                        yield text
 
 
 def _as_items(data: Any, preferred_key: str) -> list[dict[str, Any]]:
@@ -251,3 +286,49 @@ def _as_items(data: Any, preferred_key: str) -> list[dict[str, Any]]:
         if isinstance(value, dict):
             return [dict(value)]
     return [data]
+
+
+def _build_chat_messages(question: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    system_prompt = str(payload.get("system_prompt", "")).strip()
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": question})
+    return messages
+
+
+def _chat_passthrough_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        k: v
+        for k, v in payload.items()
+        if k not in {"question", "system_prompt"}
+    }
+
+
+def _extract_stream_delta_text(chunk: dict[str, Any]) -> str:
+    try:
+        choice = chunk["choices"][0]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    for candidate in (
+        choice.get("delta", {}).get("content"),
+        choice.get("message", {}).get("content"),
+    ):
+        text = _normalize_stream_content(candidate)
+        if text:
+            return text
+    return ""
+
+
+def _normalize_stream_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict) and item.get("type") == "text":
+            parts.append(str(item.get("text", "")))
+    return "".join(parts)

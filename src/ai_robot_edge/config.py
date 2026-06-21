@@ -72,8 +72,12 @@ class VadConfig:
 @dataclass(frozen=True)
 class VoiceConfig:
     visual_listen_timeout_ms: int
+    followup_listen_timeout_ms: int
     welcome_text: str
     auto_listen_after_welcome: bool
+    speech_interrupt_enabled: bool
+    suppress_mic_while_speaking: bool
+    welcome_once_per_session: bool
 
 
 @dataclass(frozen=True)
@@ -132,12 +136,14 @@ class TrackingConfig:
     pan_response_exponent: float
     tilt_response_exponent: float
     target_stickiness: float
+    target_lock_timeout_ms: int
     prediction_lead_seconds: float = 0.08
     stale_detection_timeout_ms: int = 300
     pan_direction: float = -1
     tilt_direction: float = 1
     center_on_target_lost: bool = True
     target_lost_timeout_seconds: float = 3
+    idle_return_to_center_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -268,7 +274,7 @@ def _parse_config(data: dict[str, Any]) -> EdgeConfig:
             device=microphone.get("device"),
         ),
         wake_word=WakeWordConfig(
-            enabled=bool(wake_word.get("enabled", True)),
+            enabled=bool(wake_word.get("enabled", False)),
             engine=str(wake_word.get("engine", "simulated")),
             keyword_id=str(wake_word.get("keyword_id", "")),
             model_path=str(wake_word.get("model_path", "")),
@@ -283,11 +289,23 @@ def _parse_config(data: dict[str, Any]) -> EdgeConfig:
             visual_listen_timeout_ms=int(
                 voice.get("visual_listen_timeout_ms", 6000)
             ),
+            followup_listen_timeout_ms=int(
+                voice.get("followup_listen_timeout_ms", 8000)
+            ),
             welcome_text=str(
                 voice.get("welcome_text", "你好，我在这里。有什么可以帮你的吗？")
             ),
             auto_listen_after_welcome=bool(
                 voice.get("auto_listen_after_welcome", True)
+            ),
+            speech_interrupt_enabled=bool(
+                voice.get("speech_interrupt_enabled", False)
+            ),
+            suppress_mic_while_speaking=bool(
+                voice.get("suppress_mic_while_speaking", True)
+            ),
+            welcome_once_per_session=bool(
+                voice.get("welcome_once_per_session", True)
             ),
         ),
         speaker=SpeakerConfig(
@@ -367,6 +385,9 @@ def _parse_config(data: dict[str, Any]) -> EdgeConfig:
                 tracking.get("tilt_response_exponent", 1.2)
             ),
             target_stickiness=float(tracking.get("target_stickiness", 0.25)),
+            target_lock_timeout_ms=int(
+                tracking.get("target_lock_timeout_ms", 1200)
+            ),
             prediction_lead_seconds=float(
                 tracking.get("prediction_lead_seconds", 0.05)
             ),
@@ -380,6 +401,9 @@ def _parse_config(data: dict[str, Any]) -> EdgeConfig:
             ),
             target_lost_timeout_seconds=float(
                 tracking.get("target_lost_timeout_seconds", 3)
+            ),
+            idle_return_to_center_seconds=float(
+                tracking.get("idle_return_to_center_seconds", 1.5)
             ),
         ),
         admin=AdminConfig(
@@ -408,6 +432,10 @@ def _validate_config(config: EdgeConfig) -> None:
         raise ValueError("only mono microphone capture is supported in v1")
     if config.voice.visual_listen_timeout_ms <= 0:
         raise ValueError("voice.visual_listen_timeout_ms must be positive")
+    if config.voice.followup_listen_timeout_ms <= 0:
+        raise ValueError("voice.followup_listen_timeout_ms must be positive")
+    if config.tracking.target_lock_timeout_ms < 0:
+        raise ValueError("tracking.target_lock_timeout_ms must be non-negative")
     if config.admin.enabled and not config.admin.auth_token:
         raise ValueError("admin.auth_token is required when admin is enabled")
     for name, axis in (("pan", config.servo.pan), ("tilt", config.servo.tilt)):
@@ -459,6 +487,8 @@ def _validate_config(config: EdgeConfig) -> None:
         raise ValueError("tracking.tilt_direction must be -1 or 1")
     if config.tracking.target_lost_timeout_seconds < 0:
         raise ValueError("tracking.target_lost_timeout_seconds must be non-negative")
+    if config.tracking.idle_return_to_center_seconds < 0:
+        raise ValueError("tracking.idle_return_to_center_seconds must be non-negative")
     if config.vision.face_input_size <= 0 or config.vision.face_input_size % 32:
         raise ValueError("vision.face_input_size must be a positive multiple of 32")
     if not 0 < config.vision.face_iou_threshold < 1:

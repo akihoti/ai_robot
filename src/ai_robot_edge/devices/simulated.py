@@ -75,10 +75,16 @@ class SimulatedSpeaker(Speaker):
             media_type,
         )
 
+    async def stop(self) -> None:
+        LOGGER.info("simulated speaker stop requested")
+
 
 class NoopServoController(ServoController):
     async def execute(self, intent: ActionIntent) -> None:
         LOGGER.info("noop servo accepted action intent: %s", intent)
+
+    async def stop(self) -> None:
+        LOGGER.info("noop servo stop requested")
 
 
 def _tone_pcm16(samples: int, sample_rate: int, offset: int) -> bytes:

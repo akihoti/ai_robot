@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -104,6 +105,25 @@ class ConversationOrchestrator:
         )
         answer = _extract_ragflow_answer(rag_response)
         return answer, rag_response
+
+    async def stream_answer(
+        self,
+        question: str,
+        context: dict[str, Any] | None = None,
+    ) -> AsyncIterator[str]:
+        self._validate_voice_gateway()
+        payload = dict(context or {})
+        payload.setdefault("system_prompt", self.voice_gateway.system_prompt)
+        try:
+            async for delta in self.ragflow.stream_query_chat(
+                chat_id=self.voice_gateway.ragflow_chat_id,
+                question=question,
+                payload=payload,
+            ):
+                yield delta
+        except Exception:
+            answer, _ = await self.answer_question(question, context)
+            yield answer
 
     async def synthesize_text(self, text: str) -> tuple[bytes, str]:
         self._validate_voice_gateway()

@@ -4,12 +4,15 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
 import websockets
 from websockets.exceptions import WebSocketException
 
+from ..admin.runtime_state import runtime_state
 from ..config import EdgeConfig
 from ..events import (
     ActionIntent,
@@ -18,11 +21,19 @@ from ..events import (
     Utterance,
     now_ms,
 )
+from ..session import SessionController
 
 LOGGER = logging.getLogger(__name__)
 
 TtsCallback = Callable[[bytes, int, int, str], Awaitable[None]]
 ActionCallback = Callable[[ActionIntent], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class ConversationResult:
+    success: bool
+    had_audio: bool = False
+    error_message: str = ""
 
 
 class ConversationClient:
@@ -36,13 +47,19 @@ class ConversationClient:
         self.on_tts = on_tts
         self.on_action = on_action
 
-    async def send_utterance(self, utterance: Utterance) -> None:
-        await self._open_session_and_exchange(
+    async def send_utterance(
+        self,
+        utterance: Utterance,
+        context: dict[str, Any] | None = None,
+    ) -> ConversationResult:
+        return await self._open_session_and_exchange(
             request_id=utterance.request_id,
-            send_payload=lambda websocket: self._send_session(websocket, utterance),
+            send_payload=lambda websocket: self._send_session(
+                websocket, utterance, context or {}
+            ),
         )
 
-    async def send_welcome_event(self, event: ConversationEvent) -> None:
+    async def send_welcome_event(self, event: ConversationEvent) -> ConversationResult:
         request_id = event.request_id or str(uuid4())
         payload = {
             "event": (
@@ -55,7 +72,7 @@ class ConversationClient:
             "cooldown_active": False,
             "welcome_text": self.config.voice.welcome_text,
         }
-        await self._open_session_and_exchange(
+        return await self._open_session_and_exchange(
             request_id=request_id,
             send_payload=lambda websocket: websocket.send(
                 _frame("event.vision", request_id, payload)
@@ -67,7 +84,7 @@ class ConversationClient:
         *,
         request_id: str,
         send_payload: Callable[[Any], Awaitable[None]],
-    ) -> None:
+    ) -> ConversationResult:
         url = self.config.server.websocket_url.format(device_id=self.config.device_id)
         headers = {"Authorization": f"Bearer {self.config.server.bearer_token}"}
         try:
@@ -78,7 +95,7 @@ class ConversationClient:
                 ping_interval=self.config.server.heartbeat_seconds,
             ) as websocket:
                 await send_payload(websocket)
-                await self._receive_until_done(websocket, request_id)
+                return await self._receive_until_done(websocket, request_id)
         except TypeError:
             async with websockets.connect(
                 url,
@@ -87,11 +104,17 @@ class ConversationClient:
                 ping_interval=self.config.server.heartbeat_seconds,
             ) as websocket:
                 await send_payload(websocket)
-                await self._receive_until_done(websocket, request_id)
+                return await self._receive_until_done(websocket, request_id)
         except (OSError, WebSocketException, asyncio.TimeoutError) as exc:
             LOGGER.error("conversation websocket failed: %s", exc)
+            return ConversationResult(success=False, error_message=str(exc))
 
-    async def _send_session(self, websocket: Any, utterance: Utterance) -> None:
+    async def _send_session(
+        self,
+        websocket: Any,
+        utterance: Utterance,
+        context: dict[str, Any],
+    ) -> None:
         await websocket.send(
             _frame(
                 "session.start",
@@ -104,7 +127,7 @@ class ConversationClient:
                         "channels": self.config.microphone.channels,
                     },
                     "wake_word_id": self.config.wake_word.keyword_id,
-                    "context": {},
+                    "context": context,
                 },
             )
         )
@@ -132,13 +155,16 @@ class ConversationClient:
             )
         )
 
-    async def _receive_until_done(self, websocket: Any, request_id: str) -> None:
+    async def _receive_until_done(self, websocket: Any, request_id: str) -> ConversationResult:
         tts_meta: dict[str, Any] | None = None
+        saw_audio = False
+        error_message = ""
         async for message in websocket:
             if isinstance(message, bytes):
                 if tts_meta is None:
                     LOGGER.warning("received binary frame without tts metadata")
                     continue
+                saw_audio = True
                 await self.on_tts(
                     message,
                     int(tts_meta.get("sample_rate", self.config.speaker.sample_rate)),
@@ -146,7 +172,7 @@ class ConversationClient:
                     str(tts_meta.get("media_type", "audio/pcm")),
                 )
                 if bool(tts_meta.get("is_final", False)):
-                    break
+                    return ConversationResult(success=True, had_audio=saw_audio)
                 tts_meta = None
                 continue
 
@@ -163,8 +189,18 @@ class ConversationClient:
                 LOGGER.info("%s: %s", frame_type, payload.get("text", ""))
             elif frame_type == "error":
                 LOGGER.error("server error: %s", payload)
+                error_message = str(payload.get("message", payload))
                 if not payload.get("retryable", False):
-                    break
+                    return ConversationResult(
+                        success=False,
+                        had_audio=saw_audio,
+                        error_message=error_message,
+                    )
+        return ConversationResult(
+            success=not bool(error_message),
+            had_audio=saw_audio,
+            error_message=error_message,
+        )
 
     async def _handle_action(self, payload: dict[str, Any]) -> None:
         name = payload.get("name")
@@ -189,14 +225,22 @@ class ConversationWorker:
         client: ConversationClient,
         playback_idle: asyncio.Event,
         auto_listen_after_welcome: bool,
-        arm_listening_window: Callable[[], None],
+        arm_welcome_listening_window: Callable[[], None],
+        arm_followup_listening_window: Callable[[], None],
+        session_controller: SessionController,
+        interrupt_playback: Callable[[], Awaitable[None]] | None = None,
+        speech_interrupt_enabled: bool = False,
     ) -> None:
         self.utterance_queue = utterance_queue
         self.conversation_queue = conversation_queue
         self.client = client
         self.playback_idle = playback_idle
         self.auto_listen_after_welcome = auto_listen_after_welcome
-        self.arm_listening_window = arm_listening_window
+        self.arm_welcome_listening_window = arm_welcome_listening_window
+        self.arm_followup_listening_window = arm_followup_listening_window
+        self.session_controller = session_controller
+        self.interrupt_playback = interrupt_playback
+        self.speech_interrupt_enabled = speech_interrupt_enabled
 
     async def run(self) -> None:
         while True:
@@ -210,13 +254,106 @@ class ConversationWorker:
                 task.cancel()
             event = await done.pop()
             if isinstance(event, Utterance):
-                await self.client.send_utterance(event)
+                context = await self.session_controller.next_turn_context()
+                LOGGER.info(
+                    "starting conversation turn request_id=%s session_id=%s turn_index=%s duration_ms=%s",
+                    event.request_id,
+                    context.get("session_id", ""),
+                    context.get("turn_index", ""),
+                    event.duration_ms,
+                )
+                runtime_state.record_server_turn(
+                    phase="started",
+                    request_id=event.request_id,
+                    session_id=str(context.get("session_id", "")) or None,
+                    turn_index=int(context.get("turn_index", 0)),
+                )
+                result = await self.client.send_utterance(event, context=context)
+                runtime_state.record_server_turn(
+                    phase="completed",
+                    request_id=event.request_id,
+                    session_id=str(context.get("session_id", "")) or None,
+                    turn_index=int(context.get("turn_index", 0)),
+                    success=result.success,
+                    error_message=result.error_message,
+                )
+                if result.success:
+                    await self._wait_for_playback_with_interrupts()
+                    await self.session_controller.note_followup_listening()
+                    self.arm_followup_listening_window()
+                else:
+                    LOGGER.warning(
+                        "conversation turn failed, rearming followup listening: %s",
+                        result.error_message,
+                    )
+                    await self.session_controller.note_followup_listening()
+                    self.arm_followup_listening_window()
                 continue
 
-            await self.client.send_welcome_event(event)
-            await self.playback_idle.wait()
+            LOGGER.info("sending welcome event request_id=%s", event.request_id)
+            runtime_state.record_server_turn(
+                phase="welcome_started",
+                request_id=event.request_id,
+            )
+            result = await self.client.send_welcome_event(event)
+            runtime_state.record_server_turn(
+                phase="welcome_completed",
+                request_id=event.request_id,
+                success=result.success,
+                error_message=result.error_message,
+            )
+            interrupted = False
+            if result.success:
+                interrupted = await self._wait_for_playback_with_interrupts()
+            else:
+                LOGGER.warning("welcome event failed: %s", result.error_message)
             if self.auto_listen_after_welcome:
-                self.arm_listening_window()
+                if interrupted:
+                    await self.session_controller.note_followup_listening()
+                    self.arm_followup_listening_window()
+                else:
+                    await self.session_controller.note_welcome_playback_finished()
+                    self.arm_welcome_listening_window()
+
+    async def _wait_for_playback_with_interrupts(self) -> bool:
+        interrupted = False
+        while True:
+            if not self.speech_interrupt_enabled:
+                await self.playback_idle.wait()
+                return interrupted
+
+            idle_task = asyncio.create_task(self.playback_idle.wait())
+            utterance_task = asyncio.create_task(self.utterance_queue.get())
+            done, pending = await asyncio.wait(
+                {idle_task, utterance_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
+            if idle_task in done and idle_task.result():
+                return interrupted
+
+            utterance = utterance_task.result()
+            interrupted = True
+            LOGGER.info(
+                "speech interrupt triggered: request_id=%s duration_ms=%s",
+                utterance.request_id,
+                utterance.duration_ms,
+            )
+            runtime_state.record_playback_interrupt()
+            if self.interrupt_playback is not None:
+                await self.interrupt_playback()
+            await self.session_controller.note_utterance_ready()
+            context = await self.session_controller.next_turn_context()
+            result = await self.client.send_utterance(utterance, context=context)
+            if not result.success:
+                LOGGER.warning(
+                    "interrupted conversation turn failed: %s",
+                    result.error_message,
+                )
 
 
 def _frame(frame_type: str, request_id: str, payload: dict[str, Any]) -> str:

@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from .runtime_state import runtime_state
 from ..config import EdgeConfig
 from ..events import now_ms
 
@@ -74,6 +75,7 @@ def collect_edge_status(config: EdgeConfig) -> dict[str, Any]:
             "allow_remote_ops": config.admin.allow_remote_ops,
             "allowed_commands": list(config.admin.allowed_commands),
         },
+        "monitoring": runtime_state.snapshot(),
     }
 
 

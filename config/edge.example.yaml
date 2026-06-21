@@ -44,7 +44,7 @@ microphone:
   device: null
 
 wake_word:
-  enabled: true
+  enabled: false
   engine: simulated
   keyword_id: demo-wake-word
   model_path: ""
@@ -57,8 +57,12 @@ vad:
 
 voice:
   visual_listen_timeout_ms: 6000
+  followup_listen_timeout_ms: 8000
   welcome_text: "你好，我在这里。有什么可以帮你的吗？"
   auto_listen_after_welcome: true
+  speech_interrupt_enabled: false
+  suppress_mic_while_speaking: true
+  welcome_once_per_session: true
 
 speaker:
   enabled: true
@@ -116,6 +120,7 @@ tracking:
   pan_response_exponent: 1.25
   tilt_response_exponent: 1.2
   target_stickiness: 0.18
+  target_lock_timeout_ms: 1200
   prediction_lead_seconds: 0.035
   stale_detection_timeout_ms: 180
   # Flip either direction when camera coordinates and physical movement disagree.
@@ -123,6 +128,7 @@ tracking:
   tilt_direction: 1
   center_on_target_lost: true
   target_lost_timeout_seconds: 3
+  idle_return_to_center_seconds: 1.5
 
 admin:
   enabled: true

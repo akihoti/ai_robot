@@ -29,8 +29,16 @@ class Speaker(ABC):
     ) -> None:
         """Play one audio chunk."""
 
+    @abstractmethod
+    async def stop(self) -> None:
+        """Stop current audio playback as soon as possible."""
+
 
 class ServoController(ABC):
     @abstractmethod
     async def execute(self, intent: ActionIntent) -> None:
         """Execute a high-level motion intent."""
+
+    @abstractmethod
+    async def stop(self) -> None:
+        """Stop the current motion as soon as possible."""

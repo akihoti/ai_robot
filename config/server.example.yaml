@@ -22,7 +22,7 @@ voice_gateway:
   # Xinference ASR and TTS model names.
   asr_model: ""
   tts_model: ""
-  tts_voice: "zh"
+  tts_voice: ""
   # RAGFlow chat assistant id used by /api/v1/voice-gateway/*
   ragflow_chat_id: ""
   tts_media_type: "audio/wav"

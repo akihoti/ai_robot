@@ -5,6 +5,7 @@ import io
 import json
 import time
 import wave
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket
@@ -272,7 +273,9 @@ class _EdgeConversationSession:
         self.request_id = ""
         self.sample_rate = 16000
         self.channels = 1
+        self.context: dict[str, Any] = {}
         self.audio_buffer = bytearray()
+        self._send_lock = asyncio.Lock()
 
     def start(self, envelope: dict[str, Any]) -> None:
         payload = envelope.get("payload", {})
@@ -280,6 +283,7 @@ class _EdgeConversationSession:
         self.request_id = str(envelope.get("request_id", "")).strip()
         self.sample_rate = int(audio.get("sample_rate", 16000))
         self.channels = int(audio.get("channels", 1))
+        self.context = dict(payload.get("context", {}))
         self.audio_buffer.clear()
 
     def note_chunk(self, _payload: dict[str, Any]) -> None:
@@ -315,45 +319,26 @@ class _EdgeConversationSession:
             )
             if not question.strip():
                 raise ValueError("ASR returned empty text")
-            await websocket.send_text(
-                _frame(
-                    "asr.final",
-                    self.request_id,
-                    {"text": question, "reason": payload.get("reason", "vad_silence")},
-                )
+            await self._send_frame(
+                websocket,
+                "asr.final",
+                self.request_id,
+                {"text": question, "reason": payload.get("reason", "vad_silence")},
             )
-            answer, rag_response = await self.orchestrator.answer_question(question, {})
-            await websocket.send_text(
-                _frame(
-                    "llm.final",
-                    self.request_id,
-                    {
-                        "text": answer,
-                        "rag_sources": rag_response.get("references", []),
-                    },
-                )
+            full_answer = await self._stream_answer_with_tts(
+                websocket,
+                question,
+                context=self.context,
             )
-            audio_out, media_type = await self.orchestrator.synthesize_text(answer)
-            resolved_media_type = media_type or "audio/wav"
-            await websocket.send_text(
-                _frame(
-                    "tts.chunk",
-                    self.request_id,
-                    {
-                        "sequence": 1,
-                        "encoding": (
-                            "wav"
-                            if "wav" in resolved_media_type.lower()
-                            else "pcm_s16le"
-                        ),
-                        "sample_rate": self.sample_rate,
-                        "channels": self.channels,
-                        "is_final": True,
-                        "media_type": resolved_media_type,
-                    },
-                )
+            await self._send_frame(
+                websocket,
+                "llm.final",
+                self.request_id,
+                {
+                    "text": full_answer,
+                    "rag_sources": [],
+                },
             )
-            await websocket.send_bytes(audio_out)
         except Exception as exc:
             await _send_error_frame(
                 websocket,
@@ -378,29 +363,21 @@ class _EdgeConversationSession:
             welcome_text, audio_out, media_type = await self.orchestrator.build_welcome_audio(
                 str(payload.get("welcome_text", "")).strip() or None
             )
-            resolved_media_type = media_type or "audio/wav"
-            await websocket.send_text(
-                _frame("llm.final", request_id, {"text": welcome_text, "rag_sources": []})
+            await self._send_frame(
+                websocket,
+                "llm.final",
+                request_id,
+                {"text": welcome_text, "rag_sources": []},
             )
-            await websocket.send_text(
-                _frame(
-                    "tts.chunk",
-                    request_id,
-                    {
-                        "sequence": 1,
-                        "encoding": (
-                            "wav"
-                            if "wav" in resolved_media_type.lower()
-                            else "pcm_s16le"
-                        ),
-                        "sample_rate": self.sample_rate,
-                        "channels": self.channels,
-                        "is_final": True,
-                        "media_type": resolved_media_type,
-                    },
-                )
+            await self._send_tts_audio(
+                websocket,
+                request_id=request_id,
+                sequence=1,
+                audio_out=audio_out,
+                media_type=media_type or "audio/wav",
+                is_final=True,
+                segment_text=welcome_text,
             )
-            await websocket.send_bytes(audio_out)
         except Exception as exc:
             await _send_error_frame(
                 websocket,
@@ -409,6 +386,152 @@ class _EdgeConversationSession:
                 message=str(exc),
                 retryable=True,
             )
+
+    async def _stream_answer_with_tts(
+        self,
+        websocket: WebSocket,
+        question: str,
+        context: dict[str, Any],
+    ) -> str:
+        queue: asyncio.Queue[_QueuedTtsSegment | None] = asyncio.Queue()
+        tts_task = asyncio.create_task(self._run_tts_queue(websocket, queue))
+        full_answer_parts: list[str] = []
+        segment_buffer = ""
+        pending_segment: str | None = None
+        try:
+            async for delta in self.orchestrator.stream_answer(question, context):
+                if not delta:
+                    continue
+                full_answer_parts.append(delta)
+                segment_buffer += delta
+                await self._send_frame(
+                    websocket,
+                    "llm.partial",
+                    self.request_id,
+                    {"text": delta},
+                )
+                ready_segments, segment_buffer = _split_ready_tts_segments(segment_buffer)
+                for segment in ready_segments:
+                    if pending_segment is not None:
+                        await queue.put(
+                            _QueuedTtsSegment(text=pending_segment, is_final=False)
+                        )
+                    pending_segment = segment
+
+            full_answer = "".join(full_answer_parts).strip()
+            if not full_answer:
+                raise ValueError("RAGFlow returned empty streamed answer")
+
+            final_segment = segment_buffer.strip()
+            if final_segment:
+                if pending_segment is not None:
+                    await queue.put(_QueuedTtsSegment(text=pending_segment, is_final=False))
+                await queue.put(_QueuedTtsSegment(text=final_segment, is_final=True))
+            elif pending_segment is not None:
+                await queue.put(_QueuedTtsSegment(text=pending_segment, is_final=True))
+            else:
+                await queue.put(_QueuedTtsSegment(text=full_answer, is_final=True))
+
+            await queue.put(None)
+            await tts_task
+            return full_answer
+        except Exception:
+            tts_task.cancel()
+            await asyncio.gather(tts_task, return_exceptions=True)
+            raise
+
+    async def _run_tts_queue(
+        self,
+        websocket: WebSocket,
+        queue: asyncio.Queue[_QueuedTtsSegment | None],
+    ) -> None:
+        sequence = 1
+        while True:
+            item = await queue.get()
+            if item is None:
+                return
+            audio_out, media_type = await self.orchestrator.synthesize_text(item.text)
+            await self._send_tts_audio(
+                websocket,
+                request_id=self.request_id,
+                sequence=sequence,
+                audio_out=audio_out,
+                media_type=media_type or "audio/wav",
+                is_final=item.is_final,
+                segment_text=item.text,
+            )
+            sequence += 1
+
+    async def _send_frame(
+        self,
+        websocket: WebSocket,
+        frame_type: str,
+        request_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        async with self._send_lock:
+            await websocket.send_text(_frame(frame_type, request_id, payload))
+
+    async def _send_tts_audio(
+        self,
+        websocket: WebSocket,
+        *,
+        request_id: str,
+        sequence: int,
+        audio_out: bytes,
+        media_type: str,
+        is_final: bool,
+        segment_text: str,
+    ) -> None:
+        async with self._send_lock:
+            await websocket.send_text(
+                _frame(
+                    "tts.chunk",
+                    request_id,
+                    {
+                        "sequence": sequence,
+                        "encoding": (
+                            "wav"
+                            if "wav" in media_type.lower()
+                            else "pcm_s16le"
+                        ),
+                        "sample_rate": self.sample_rate,
+                        "channels": self.channels,
+                        "is_final": is_final,
+                        "media_type": media_type,
+                        "segment_text": segment_text,
+                    },
+                )
+            )
+            await websocket.send_bytes(audio_out)
+
+
+@dataclass(frozen=True)
+class _QueuedTtsSegment:
+    text: str
+    is_final: bool
+
+
+def _split_ready_tts_segments(text: str) -> tuple[list[str], str]:
+    ready: list[str] = []
+    start = 0
+    last_emit = 0
+    punctuation = "。！？；!?\n"
+    soft_punctuation = "，,：:"
+    for index, char in enumerate(text):
+        length = index - start + 1
+        should_emit = char in punctuation
+        if not should_emit and length >= 24 and char in soft_punctuation:
+            should_emit = True
+        if not should_emit and length >= 36:
+            should_emit = True
+        if should_emit:
+            segment = text[start : index + 1].strip()
+            if segment:
+                ready.append(segment)
+            last_emit = index + 1
+            start = index + 1
+    return ready, text[last_emit:]
 
 
 def _pcm16_to_wav(audio_bytes: bytes, *, sample_rate: int, channels: int) -> bytes:
