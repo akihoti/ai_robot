@@ -44,7 +44,7 @@ def build_microphone(config: EdgeConfig) -> Microphone:
 
 def build_speaker(config: EdgeConfig) -> Speaker:
     if config.runtime.mode != "simulated":
-        return SoundDeviceSpeaker()
+        return SoundDeviceSpeaker(device=config.speaker.device)
     return SimulatedSpeaker()
 
 

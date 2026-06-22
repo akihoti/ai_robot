@@ -163,6 +163,7 @@ class EdgeApp:
             conversation_queue=conversation_queue,
             client=conversation_client,
             playback_idle=playback_idle,
+            playback_active=playback_active if playback_worker is not None else None,
             auto_listen_after_welcome=self.config.voice.auto_listen_after_welcome,
             arm_welcome_listening_window=(
                 (

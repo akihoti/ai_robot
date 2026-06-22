@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -87,22 +88,16 @@ class ConversationClient:
     ) -> ConversationResult:
         url = self.config.server.websocket_url.format(device_id=self.config.device_id)
         headers = {"Authorization": f"Bearer {self.config.server.bearer_token}"}
+        connect_kwargs = {
+            "open_timeout": self.config.server.connect_timeout_seconds,
+            "ping_interval": self.config.server.heartbeat_seconds,
+        }
+        if "additional_headers" in inspect.signature(websockets.connect).parameters:
+            connect_kwargs["additional_headers"] = headers
+        else:
+            connect_kwargs["extra_headers"] = headers
         try:
-            async with websockets.connect(
-                url,
-                additional_headers=headers,
-                open_timeout=self.config.server.connect_timeout_seconds,
-                ping_interval=self.config.server.heartbeat_seconds,
-            ) as websocket:
-                await send_payload(websocket)
-                return await self._receive_until_done(websocket, request_id)
-        except TypeError:
-            async with websockets.connect(
-                url,
-                extra_headers=headers,
-                open_timeout=self.config.server.connect_timeout_seconds,
-                ping_interval=self.config.server.heartbeat_seconds,
-            ) as websocket:
+            async with websockets.connect(url, **connect_kwargs) as websocket:
                 await send_payload(websocket)
                 return await self._receive_until_done(websocket, request_id)
         except (OSError, WebSocketException, asyncio.TimeoutError) as exc:
@@ -224,6 +219,7 @@ class ConversationWorker:
         conversation_queue: asyncio.Queue[ConversationEvent],
         client: ConversationClient,
         playback_idle: asyncio.Event,
+        playback_active: asyncio.Event | None,
         auto_listen_after_welcome: bool,
         arm_welcome_listening_window: Callable[[], None],
         arm_followup_listening_window: Callable[[], None],
@@ -235,6 +231,7 @@ class ConversationWorker:
         self.conversation_queue = conversation_queue
         self.client = client
         self.playback_idle = playback_idle
+        self.playback_active = playback_active
         self.auto_listen_after_welcome = auto_listen_after_welcome
         self.arm_welcome_listening_window = arm_welcome_listening_window
         self.arm_followup_listening_window = arm_followup_listening_window
@@ -278,7 +275,9 @@ class ConversationWorker:
                     error_message=result.error_message,
                 )
                 if result.success:
-                    await self._wait_for_playback_with_interrupts()
+                    await self._wait_for_playback_with_interrupts(
+                        expected_audio=result.had_audio
+                    )
                     await self.session_controller.note_followup_listening()
                     self.arm_followup_listening_window()
                 else:
@@ -304,7 +303,9 @@ class ConversationWorker:
             )
             interrupted = False
             if result.success:
-                interrupted = await self._wait_for_playback_with_interrupts()
+                interrupted = await self._wait_for_playback_with_interrupts(
+                    expected_audio=result.had_audio
+                )
             else:
                 LOGGER.warning("welcome event failed: %s", result.error_message)
             if self.auto_listen_after_welcome:
@@ -315,8 +316,10 @@ class ConversationWorker:
                     await self.session_controller.note_welcome_playback_finished()
                     self.arm_welcome_listening_window()
 
-    async def _wait_for_playback_with_interrupts(self) -> bool:
+    async def _wait_for_playback_with_interrupts(self, *, expected_audio: bool) -> bool:
         interrupted = False
+        if expected_audio:
+            await self._await_playback_start()
         while True:
             if not self.speech_interrupt_enabled:
                 await self.playback_idle.wait()
@@ -354,6 +357,18 @@ class ConversationWorker:
                     "interrupted conversation turn failed: %s",
                     result.error_message,
                 )
+
+    async def _await_playback_start(self, timeout_seconds: float = 1.0) -> None:
+        if self.playback_active is None:
+            return
+        if self.playback_active.is_set() or not self.playback_idle.is_set():
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
+        while loop.time() < deadline:
+            if self.playback_active.is_set() or not self.playback_idle.is_set():
+                return
+            await asyncio.sleep(0.01)
 
 
 def _frame(frame_type: str, request_id: str, payload: dict[str, Any]) -> str:

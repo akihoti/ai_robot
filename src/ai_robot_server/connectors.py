@@ -145,10 +145,14 @@ class XinferenceClient(BaseConnector):
         model: str,
         text: str,
         voice: str,
+        preferred_media_type: str = "",
     ) -> tuple[bytes, str]:
         payload: dict[str, Any] = {"model": model, "input": text}
         if voice.strip():
             payload["voice"] = voice
+        response_format = _response_format_for_media_type(preferred_media_type)
+        if response_format is not None:
+            payload["response_format"] = response_format
         async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
             response = await client.post(
                 f"{self.config.base_url}/v1/audio/speech",
@@ -156,7 +160,11 @@ class XinferenceClient(BaseConnector):
                 json=payload,
             )
         response.raise_for_status()
-        media_type = response.headers.get("content-type", "audio/mpeg")
+        media_type = _normalize_tts_media_type(
+            response.headers.get("content-type", "application/octet-stream"),
+            response.content,
+            preferred_media_type,
+        )
         return response.content, media_type
 
 
@@ -286,6 +294,58 @@ def _as_items(data: Any, preferred_key: str) -> list[dict[str, Any]]:
         if isinstance(value, dict):
             return [dict(value)]
     return [data]
+
+
+def _response_format_for_media_type(media_type: str) -> str | None:
+    normalized = media_type.split(";", 1)[0].strip().lower()
+    if not normalized:
+        return None
+    if "wav" in normalized:
+        return "wav"
+    if "mpeg" in normalized or "mp3" in normalized:
+        return "mp3"
+    if "pcm" in normalized:
+        return "pcm"
+    if "flac" in normalized:
+        return "flac"
+    if "ogg" in normalized or "opus" in normalized:
+        return "opus"
+    return None
+
+
+def _normalize_tts_media_type(
+    reported_media_type: str,
+    audio_bytes: bytes,
+    preferred_media_type: str,
+) -> str:
+    normalized = reported_media_type.split(";", 1)[0].strip().lower()
+    if normalized and normalized not in {
+        "application/octet-stream",
+        "binary/octet-stream",
+        "application/octetstream",
+    }:
+        return normalized
+
+    sniffed = _sniff_audio_media_type(audio_bytes)
+    if sniffed is not None:
+        return sniffed
+
+    preferred = preferred_media_type.split(";", 1)[0].strip().lower()
+    if preferred:
+        return preferred
+    return normalized or "application/octet-stream"
+
+
+def _sniff_audio_media_type(audio_bytes: bytes) -> str | None:
+    if len(audio_bytes) >= 12 and audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
+        return "audio/wav"
+    if audio_bytes[:3] == b"ID3":
+        return "audio/mpeg"
+    if len(audio_bytes) >= 2 and audio_bytes[0] == 0xFF and (audio_bytes[1] & 0xE0) == 0xE0:
+        return "audio/mpeg"
+    if audio_bytes[:4] == b"OggS":
+        return "audio/ogg"
+    return None
 
 
 def _build_chat_messages(question: str, payload: dict[str, Any]) -> list[dict[str, Any]]:

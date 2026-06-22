@@ -195,6 +195,23 @@ def _load_yaml(path: str | Path) -> dict[str, Any]:
     return data
 
 
+def _parse_audio_device(value: Any) -> str | int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized.lower() == "default":
+            return None
+        if normalized.isdigit():
+            return int(normalized)
+        return normalized
+    return str(value)
+
+
 def _parse_config(data: dict[str, Any]) -> EdgeConfig:
     server = data.get("server", {})
     runtime = data.get("runtime", {})
@@ -271,7 +288,7 @@ def _parse_config(data: dict[str, Any]) -> EdgeConfig:
             sample_rate=int(microphone.get("sample_rate", 16000)),
             channels=int(microphone.get("channels", 1)),
             frame_ms=int(microphone.get("frame_ms", 30)),
-            device=microphone.get("device"),
+            device=_parse_audio_device(microphone.get("device")),
         ),
         wake_word=WakeWordConfig(
             enabled=bool(wake_word.get("enabled", False)),
@@ -310,7 +327,7 @@ def _parse_config(data: dict[str, Any]) -> EdgeConfig:
         ),
         speaker=SpeakerConfig(
             enabled=bool(speaker.get("enabled", True)),
-            device=speaker.get("device"),
+            device=_parse_audio_device(speaker.get("device")),
             sample_rate=int(speaker.get("sample_rate", 16000)),
         ),
         servo=ServoConfig(

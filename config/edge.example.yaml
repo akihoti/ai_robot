@@ -41,6 +41,7 @@ microphone:
   sample_rate: 16000
   channels: 1
   frame_ms: 30
+  # null / "" / default => use system default input device
   device: null
 
 wake_word:
@@ -66,6 +67,7 @@ voice:
 
 speaker:
   enabled: true
+  # null / "" / default => use system default output device
   device: null
   sample_rate: 16000
 

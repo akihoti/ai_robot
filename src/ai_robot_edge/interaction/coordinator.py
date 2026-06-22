@@ -38,6 +38,7 @@ class InteractionCoordinator:
         self.disarm_listening = disarm_listening
         self.idle_return_to_center_seconds = max(0.0, idle_return_to_center_seconds)
         self._present_frames = 0
+        self._absent_frames = 0
         self._last_welcome_at = -vision_config.welcome_cooldown_seconds
         self._idle_return_task: asyncio.Task[None] | None = None
 
@@ -45,15 +46,24 @@ class InteractionCoordinator:
         while True:
             event = await self.vision_queue.get()
             if event.event_type == VisionEventType.PERSON_PRESENT:
+                self._absent_frames = 0
                 self._cancel_idle_return()
                 await self.session_controller.note_person_present()
                 await self._handle_person_present(event)
             else:
                 self._present_frames = 0
+                self._absent_frames += 1
+                if self._absent_frames < self.vision_config.stable_frames:
+                    LOGGER.debug(
+                        "person absent candidate %s/%s",
+                        self._absent_frames,
+                        self.vision_config.stable_frames,
+                    )
+                    continue
                 self.disarm_listening()
                 await self.session_controller.note_person_absent()
                 self._schedule_idle_return()
-                LOGGER.debug("person absent; stable counter reset")
+                LOGGER.debug("person absent confirmed; stable counter reset")
 
     async def _handle_person_present(self, event: VisionEvent) -> None:
         self._present_frames += 1

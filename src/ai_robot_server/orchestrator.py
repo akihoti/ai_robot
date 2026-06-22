@@ -131,6 +131,7 @@ class ConversationOrchestrator:
             model=self.voice_gateway.tts_model,
             text=text,
             voice=self.voice_gateway.tts_voice,
+            preferred_media_type=self.voice_gateway.tts_media_type,
         )
 
     async def build_welcome_audio(self, text: str | None = None) -> tuple[str, bytes, str]:
