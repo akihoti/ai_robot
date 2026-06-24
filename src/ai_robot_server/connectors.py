@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
 from .config import ConnectorConfig
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -168,6 +172,39 @@ class XinferenceClient(BaseConnector):
         return response.content, media_type
 
 
+class MeloTtsClient(BaseConnector):
+    name = "melotts_sidecar"
+    health_paths = ("/health",)
+
+    async def synthesize_speech(
+        self,
+        *,
+        text: str,
+        voice: str = "",
+        speed: float = 1.0,
+        preferred_media_type: str = "",
+    ) -> tuple[bytes, str]:
+        payload: dict[str, Any] = {"input": text, "speed": speed}
+        if voice.strip():
+            payload["voice"] = voice
+        response_format = _response_format_for_media_type(preferred_media_type)
+        if response_format is not None:
+            payload["response_format"] = response_format
+        async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
+            response = await client.post(
+                f"{self.config.base_url}/v1/audio/speech",
+                headers=self._headers() | {"Content-Type": "application/json"},
+                json=payload,
+            )
+        response.raise_for_status()
+        media_type = _normalize_tts_media_type(
+            response.headers.get("content-type", "application/octet-stream"),
+            response.content,
+            preferred_media_type,
+        )
+        return response.content, media_type
+
+
 class RagflowClient(BaseConnector):
     name = "ragflow"
     health_paths = ("/", "/api/v1/datasets")
@@ -247,6 +284,7 @@ class RagflowClient(BaseConnector):
         self, *, chat_id: str, question: str, payload: dict[str, Any]
     ) -> AsyncIterator[str]:
         messages = _build_chat_messages(question, payload)
+        dedupe = _RagflowStreamDedupe()
         timeout = httpx.Timeout(
             connect=self.config.timeout_seconds,
             read=120.0,
@@ -278,8 +316,17 @@ class RagflowClient(BaseConnector):
                     except json.JSONDecodeError:
                         continue
                     text = _extract_stream_delta_text(chunk)
-                    if text:
-                        yield text
+                    output, action = dedupe.accept(text)
+                    if action != "delta":
+                        LOGGER.info(
+                            "ragflow stream dedupe action=%s raw_chars=%s output_chars=%s emitted_chars=%s",
+                            action,
+                            len(text),
+                            len(output),
+                            len(dedupe.emitted_text),
+                        )
+                    if output:
+                        yield output
 
 
 def _as_items(data: Any, preferred_key: str) -> list[dict[str, Any]]:
@@ -353,7 +400,9 @@ def _build_chat_messages(question: str, payload: dict[str, Any]) -> list[dict[st
     system_prompt = str(payload.get("system_prompt", "")).strip()
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": question})
+    history = _normalize_chat_history(payload.get("conversation_history", []))
+    messages.extend(history)
+    messages.append({"role": "user", "content": _question_with_history(question, history)})
     return messages
 
 
@@ -361,8 +410,38 @@ def _chat_passthrough_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         k: v
         for k, v in payload.items()
-        if k not in {"question", "system_prompt"}
+        if k not in {"question", "system_prompt", "conversation_history", "messages"}
     }
+
+
+def _normalize_chat_history(history: Any) -> list[dict[str, str]]:
+    if not isinstance(history, list):
+        return []
+    messages: list[dict[str, str]] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role", "")).strip()
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(item.get("content", "")).strip()
+        if not content:
+            continue
+        messages.append({"role": role, "content": content})
+    return messages
+
+
+def _question_with_history(question: str, history: list[dict[str, str]]) -> str:
+    question = str(question).strip()
+    if not history:
+        return question
+    lines = ["对话历史："]
+    for message in history:
+        label = "用户" if message["role"] == "user" else "助手"
+        lines.append(f"{label}：{message['content']}")
+    lines.append("")
+    lines.append(f"当前用户问题：{question}")
+    return "\n".join(lines)
 
 
 def _extract_stream_delta_text(chunk: dict[str, Any]) -> str:
@@ -378,6 +457,35 @@ def _extract_stream_delta_text(chunk: dict[str, Any]) -> str:
         if text:
             return text
     return ""
+
+
+class _RagflowStreamDedupe:
+    """Normalize RAGFlow streams that mix delta chunks with full-answer chunks."""
+
+    _MIN_EXACT_DUPLICATE_CHARS = 8
+
+    def __init__(self) -> None:
+        self.emitted_text = ""
+
+    def accept(self, text: str) -> tuple[str, str]:
+        if not text:
+            return "", "empty"
+
+        if self.emitted_text and text.startswith(self.emitted_text):
+            suffix = text[len(self.emitted_text) :]
+            if suffix:
+                self.emitted_text = text
+                return suffix, "cumulative_suffix"
+            if self._looks_like_full_answer_duplicate(text):
+                return "", "duplicate_full"
+
+        self.emitted_text += text
+        return text, "delta"
+
+    def _looks_like_full_answer_duplicate(self, text: str) -> bool:
+        return len(text) >= self._MIN_EXACT_DUPLICATE_CHARS and any(
+            char in text for char in "。！？；!?"
+        )
 
 
 def _normalize_stream_content(content: Any) -> str:

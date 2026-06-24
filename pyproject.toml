@@ -24,6 +24,9 @@ servo = [
 audio = [
   "sounddevice>=0.4.6",
 ]
+vad-onnx = [
+  "onnxruntime>=1.18",
+]
 vision = [
   "opencv-python>=4.8",
   "Pillow>=10.0",

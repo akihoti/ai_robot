@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import wave
+from io import BytesIO
+from pathlib import Path
 
 from .admin.runtime_state import runtime_state
-from .audio.vad import EnergyVadSegmenter
+from .audio.vad import build_vad_segmenter
 from .audio.wake_word import build_wake_word_detector
 from .audio.worker import AudioWorker
 from .config import EdgeConfig
@@ -16,6 +19,7 @@ from .events import (
     ConversationEventType,
     Utterance,
     VisionEvent,
+    VisionEventType,
 )
 from .interaction import (
     InteractionCoordinator,
@@ -94,6 +98,15 @@ class EdgeApp:
         async def handle_wake_word_detected() -> None:
             if not await session_controller.try_start_welcome():
                 return
+            if self.config.voice.local_welcome_enabled:
+                await queue_local_welcome(
+                    VisionEvent(
+                        event_type=VisionEventType.WELCOME_TRIGGERED,
+                        confidence=1.0,
+                        source="wake_word",
+                    )
+                )
+                return
             LOGGER.info("wake-word-triggered welcome queued")
             await conversation_queue.put(
                 ConversationEvent(event_type=ConversationEventType.WELCOME)
@@ -102,7 +115,7 @@ class EdgeApp:
         if self.config.microphone.enabled:
             audio_worker = AudioWorker(
                 microphone=build_microphone(self.config),
-                vad=EnergyVadSegmenter(self.config.vad),
+                vad=build_vad_segmenter(self.config.vad),
                 utterance_queue=utterance_queue,
                 listen_timeout_ms=self.config.voice.visual_listen_timeout_ms,
                 suppress_event=(
@@ -122,6 +135,44 @@ class EdgeApp:
             )
             tasks.append(asyncio.create_task(audio_worker.run(), name="audio-worker"))
 
+        if self.config.speaker.enabled:
+            playback_worker = PlaybackWorker(
+                queue=tts_queue,
+                speaker=build_speaker(self.config),
+                idle_event=playback_idle,
+                active_event=playback_active,
+                on_playback_started=session_controller.note_playback_started,
+            )
+            tasks.append(asyncio.create_task(playback_worker.run(), name="playback"))
+
+        async def queue_local_welcome(_event: VisionEvent) -> None:
+            if playback_worker is None:
+                LOGGER.warning("local welcome skipped because speaker is disabled")
+                await session_controller.note_welcome_playback_finished()
+                if audio_worker is not None:
+                    audio_worker.arm_presence_listening()
+                return
+            try:
+                chunk = _load_local_welcome_chunk(
+                    self.config.voice.welcome_audio_path,
+                    fallback_sample_rate=self.config.speaker.sample_rate,
+                )
+            except OSError:
+                LOGGER.exception(
+                    "local welcome audio unavailable: %s",
+                    self.config.voice.welcome_audio_path,
+                )
+                await session_controller.note_welcome_playback_finished()
+                if audio_worker is not None:
+                    audio_worker.arm_presence_listening()
+                return
+
+            await tts_queue.put(chunk)
+            await _wait_for_playback_cycle(playback_active, playback_idle)
+            await session_controller.note_welcome_playback_finished()
+            if audio_worker is not None:
+                audio_worker.arm_presence_listening()
+
         coordinator = InteractionCoordinator(
             vision_config=self.config.vision,
             vision_queue=vision_queue,
@@ -129,7 +180,22 @@ class EdgeApp:
             conversation_queue=conversation_queue,
             session_controller=session_controller,
             disarm_listening=audio_worker.disarm if audio_worker is not None else lambda: None,
-            idle_return_to_center_seconds=self.config.tracking.idle_return_to_center_seconds,
+            idle_return_to_center_seconds=(
+                self.config.voice.face_absence_stop_listening_seconds
+                if self.config.voice.presence_listening_enabled
+                else self.config.tracking.idle_return_to_center_seconds
+            ),
+            arm_presence_listening=(
+                audio_worker.arm_presence_listening
+                if audio_worker is not None
+                else lambda: None
+            ),
+            queue_local_welcome=(
+                queue_local_welcome
+                if self.config.voice.local_welcome_enabled
+                else None
+            ),
+            local_welcome_enabled=self.config.voice.local_welcome_enabled,
         )
         dispatcher = ActionDispatcher(
             action_queue=action_queue,
@@ -149,23 +215,11 @@ class EdgeApp:
             ),
             on_action=action_queue.put,
         )
-        if self.config.speaker.enabled:
-            playback_worker = PlaybackWorker(
-                queue=tts_queue,
-                speaker=build_speaker(self.config),
-                idle_event=playback_idle,
-                active_event=playback_active,
-                on_playback_started=session_controller.note_playback_started,
-            )
-            tasks.append(asyncio.create_task(playback_worker.run(), name="playback"))
-        conversation_worker = ConversationWorker(
-            utterance_queue=utterance_queue,
-            conversation_queue=conversation_queue,
-            client=conversation_client,
-            playback_idle=playback_idle,
-            playback_active=playback_active if playback_worker is not None else None,
-            auto_listen_after_welcome=self.config.voice.auto_listen_after_welcome,
-            arm_welcome_listening_window=(
+        arm_after_welcome = (
+            audio_worker.arm_presence_listening
+            if audio_worker is not None
+            and self.config.voice.presence_listening_enabled
+            else (
                 (
                     lambda: audio_worker.arm_listening_window(
                         self.config.voice.visual_listen_timeout_ms
@@ -173,8 +227,13 @@ class EdgeApp:
                 )
                 if audio_worker is not None
                 else lambda: None
-            ),
-            arm_followup_listening_window=(
+            )
+        )
+        arm_after_response = (
+            audio_worker.arm_presence_listening
+            if audio_worker is not None
+            and self.config.voice.presence_listening_enabled
+            else (
                 (
                     lambda: audio_worker.arm_listening_window(
                         self.config.voice.followup_listen_timeout_ms
@@ -182,7 +241,17 @@ class EdgeApp:
                 )
                 if audio_worker is not None
                 else lambda: None
-            ),
+            )
+        )
+        conversation_worker = ConversationWorker(
+            utterance_queue=utterance_queue,
+            conversation_queue=conversation_queue,
+            client=conversation_client,
+            playback_idle=playback_idle,
+            playback_active=playback_active if playback_worker is not None else None,
+            auto_listen_after_welcome=self.config.voice.auto_listen_after_welcome,
+            arm_welcome_listening_window=arm_after_welcome,
+            arm_followup_listening_window=arm_after_response,
             session_controller=session_controller,
             interrupt_playback=(
                 playback_worker.interrupt if playback_worker is not None else None
@@ -208,3 +277,35 @@ class EdgeApp:
                 close_detector()
             if isinstance(servo_controller, PanTiltGimbal):
                 await servo_controller.close()
+
+
+async def _wait_for_playback_cycle(
+    playback_active: asyncio.Event,
+    playback_idle: asyncio.Event,
+) -> None:
+    try:
+        await asyncio.wait_for(playback_active.wait(), timeout=1)
+    except asyncio.TimeoutError:
+        await playback_idle.wait()
+        return
+    await playback_idle.wait()
+
+
+def _load_local_welcome_chunk(
+    path: str,
+    *,
+    fallback_sample_rate: int,
+) -> TtsChunk:
+    audio_path = Path(path)
+    data = audio_path.read_bytes()
+    sample_rate = fallback_sample_rate
+    channels = 1
+    with wave.open(BytesIO(data), "rb") as wav_file:
+        sample_rate = wav_file.getframerate()
+        channels = wav_file.getnchannels()
+    return TtsChunk(
+        audio=data,
+        sample_rate=sample_rate,
+        channels=channels,
+        media_type="audio/wav",
+    )

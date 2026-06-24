@@ -12,6 +12,7 @@ class EdgeDevice:
     connection_count: int = 0
     last_seen_ms: int | None = None
     status: dict[str, Any] = field(default_factory=dict)
+    server_activity: dict[str, Any] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
 
 
@@ -51,6 +52,12 @@ class EdgeDeviceRegistry:
         device = self.get_device(device_id)
         device.logs.append(line)
         device.logs = device.logs[-200:]
+
+    def update_server_activity(
+        self, device_id: str, activity: dict[str, Any]
+    ) -> None:
+        device = self.get_device(device_id)
+        device.server_activity = dict(activity)
 
     async def enqueue_command(
         self, device_id: str, command: dict[str, Any]

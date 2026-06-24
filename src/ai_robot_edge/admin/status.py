@@ -57,6 +57,10 @@ def collect_edge_status(config: EdgeConfig) -> dict[str, Any]:
                 "enabled": config.speaker.enabled,
                 "sample_rate": config.speaker.sample_rate,
                 "device": config.speaker.device,
+                "normalize_loudness": config.speaker.normalize_loudness,
+                "target_rms_dbfs": config.speaker.target_rms_dbfs,
+                "peak_limit": config.speaker.peak_limit,
+                "max_output_channels": config.speaker.max_output_channels,
             },
             "wake_word": {
                 "enabled": config.wake_word.enabled,

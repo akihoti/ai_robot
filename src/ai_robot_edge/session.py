@@ -82,7 +82,7 @@ class SessionController:
                 and self._session_id is not None
                 and self._welcome_sent
             ):
-                LOGGER.info("welcome suppressed for active session %s", self._session_id)
+                LOGGER.debug("welcome suppressed for active session %s", self._session_id)
                 return False
             if self._state not in {
                 EdgeSessionState.IDLE,
@@ -121,18 +121,22 @@ class SessionController:
     async def note_playback_started(self) -> None:
         await self.transition(EdgeSessionState.SPEAKING, "playback_started")
 
-    async def note_person_absent(self) -> None:
-        if self._state in {
+    async def note_person_absent(self, *, force: bool = False) -> bool:
+        if force or self._state in {
             EdgeSessionState.IDLE,
             EdgeSessionState.TRACKING,
-            EdgeSessionState.LISTENING,
-            EdgeSessionState.FOLLOWUP_LISTENING,
             EdgeSessionState.DISENGAGED,
         }:
             self._session_id = None
             self._turn_index = 0
             self._welcome_sent = False
             await self.transition(EdgeSessionState.DISENGAGED, "person_absent")
+            return True
+        LOGGER.debug(
+            "person absent during active state %s; ignoring to avoid premature session reset",
+            self._state.value,
+        )
+        return False
 
     async def recover_to_tracking(self, reason: str) -> None:
         await self.transition(EdgeSessionState.TRACKING, reason)

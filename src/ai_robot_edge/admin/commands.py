@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import socket
 from typing import Any
+from urllib.parse import urlparse
 
 from ..config import EdgeConfig
 
@@ -70,6 +72,8 @@ def validate_command(config: EdgeConfig, command_name: str) -> CommandSpec:
 
 async def run_command(config: EdgeConfig, command_name: str) -> dict[str, Any]:
     spec = validate_command(config, command_name)
+    if command_name == "test_server_connection":
+        return await _run_server_connection_probe(config, command_name, spec)
     process = await asyncio.create_subprocess_exec(
         *spec.argv,
         stdout=asyncio.subprocess.PIPE,
@@ -97,3 +101,52 @@ async def run_command(config: EdgeConfig, command_name: str) -> dict[str, Any]:
         "stdout": stdout.decode("utf-8", errors="replace"),
         "stderr": stderr.decode("utf-8", errors="replace"),
     }
+
+
+async def _run_server_connection_probe(
+    config: EdgeConfig,
+    command_name: str,
+    spec: CommandSpec,
+) -> dict[str, Any]:
+    target = _server_probe_target(config)
+
+    def connect() -> dict[str, Any]:
+        try:
+            with socket.create_connection(
+                (target["host"], target["port"]),
+                timeout=config.server.connect_timeout_seconds,
+            ):
+                return {
+                    "ok": True,
+                    "stdout": (
+                        f"connected to {target['host']}:{target['port']} "
+                        f"from {target['url']}\n"
+                    ),
+                    "stderr": "",
+                }
+        except OSError as exc:
+            return {"ok": False, "stdout": "", "stderr": f"{exc}\n"}
+
+    result = await asyncio.to_thread(connect)
+    return {
+        "ok": result["ok"],
+        "command": command_name,
+        "description": spec.description,
+        "returncode": 0 if result["ok"] else 1,
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+    }
+
+
+def _server_probe_target(config: EdgeConfig) -> dict[str, Any]:
+    url = config.server.websocket_url.format(device_id=config.device_id)
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        raise CommandRejected(f"server websocket URL has no host: {url}")
+    if parsed.port is not None:
+        port = parsed.port
+    elif parsed.scheme == "wss":
+        port = 443
+    else:
+        port = 80
+    return {"url": url, "host": parsed.hostname, "port": port}

@@ -51,15 +51,26 @@ wake_word:
   model_path: ""
 
 vad:
+  engine: silero_onnx
+  model_path: pretrain/silero_vad.onnx
+  sample_rate: 16000
+  threshold: 0.45
+  negative_threshold: 0.30
   energy_threshold: 0.015
   silence_ms: 800
   max_utterance_ms: 10000
   pre_roll_ms: 300
+  min_speech_ms: 250
+  cooldown_ms: 800
 
 voice:
   visual_listen_timeout_ms: 6000
   followup_listen_timeout_ms: 8000
   welcome_text: "你好，我在这里。有什么可以帮你的吗？"
+  local_welcome_enabled: true
+  welcome_audio_path: assets/audio/welcome.wav
+  presence_listening_enabled: true
+  face_absence_stop_listening_seconds: 2.0
   auto_listen_after_welcome: true
   speech_interrupt_enabled: false
   suppress_mic_while_speaking: true
@@ -70,6 +81,10 @@ speaker:
   # null / "" / default => use system default output device
   device: null
   sample_rate: 16000
+  normalize_loudness: true
+  target_rms_dbfs: -18.0
+  peak_limit: 0.95
+  max_output_channels: 2
 
 servo:
   enabled: false

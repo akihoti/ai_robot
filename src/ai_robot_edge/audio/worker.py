@@ -9,7 +9,7 @@ from ..admin.runtime_state import runtime_state
 from ..devices.base import Microphone
 from ..events import Utterance
 from .wake_word import WakeWordDetector
-from .vad import EnergyVadSegmenter
+from .vad import VadSegmenter
 
 LOGGER = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ class AudioWorker:
     def __init__(
         self,
         microphone: Microphone,
-        vad: EnergyVadSegmenter,
+        vad: VadSegmenter,
         utterance_queue: asyncio.Queue[Utterance],
         listen_timeout_ms: int,
         suppress_event: asyncio.Event | None = None,
@@ -37,10 +37,12 @@ class AudioWorker:
         self.on_utterance_ready = on_utterance_ready
         self.on_listening_expired = on_listening_expired
         self._listening_deadline: float | None = None
+        self._presence_listening = False
 
     def arm_listening_window(self, timeout_ms: int | None = None) -> None:
         self.vad.reset()
         effective_timeout_ms = timeout_ms or self.listen_timeout_ms
+        self._presence_listening = False
         self._listening_deadline = monotonic() + effective_timeout_ms / 1000
         runtime_state.record_listening(armed=True, timeout_ms=effective_timeout_ms)
         LOGGER.info(
@@ -48,12 +50,23 @@ class AudioWorker:
             effective_timeout_ms / 1000,
         )
 
+    def arm_presence_listening(self) -> None:
+        if not self._presence_listening:
+            self.vad.reset()
+        self._presence_listening = True
+        self._listening_deadline = None
+        runtime_state.record_listening(armed=True, timeout_ms=None)
+        LOGGER.info("presence listening armed")
+
     def disarm(self) -> None:
         self.vad.reset()
+        self._presence_listening = False
         self._listening_deadline = None
         runtime_state.record_listening(armed=False)
 
     async def _is_listening(self) -> bool:
+        if self._presence_listening:
+            return True
         if self._listening_deadline is None:
             return False
         if monotonic() >= self._listening_deadline:
@@ -67,7 +80,7 @@ class AudioWorker:
     async def run(self) -> None:
         async for frame in self.microphone.frames():
             if self.suppress_event is not None and self.suppress_event.is_set():
-                if self._listening_deadline is not None:
+                if self._listening_deadline is not None or self._presence_listening:
                     LOGGER.debug("listening suppressed while speaking")
                     self.disarm()
                 continue

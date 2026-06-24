@@ -185,12 +185,11 @@ class ConversationClient:
             elif frame_type == "error":
                 LOGGER.error("server error: %s", payload)
                 error_message = str(payload.get("message", payload))
-                if not payload.get("retryable", False):
-                    return ConversationResult(
-                        success=False,
-                        had_audio=saw_audio,
-                        error_message=error_message,
-                    )
+                return ConversationResult(
+                    success=False,
+                    had_audio=saw_audio,
+                    error_message=error_message,
+                )
         return ConversationResult(
             success=not bool(error_message),
             had_audio=saw_audio,

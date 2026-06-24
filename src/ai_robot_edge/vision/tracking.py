@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Callable
 
 from ..config import TrackingConfig
 from ..devices.gimbal import GimbalPosition, PanTiltGimbal
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)

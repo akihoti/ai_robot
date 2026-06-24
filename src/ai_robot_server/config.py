@@ -5,6 +5,13 @@ from pathlib import Path
 from typing import Any
 
 
+DEFAULT_VOICE_SYSTEM_PROMPT = (
+    "你是机器视觉工作室的语音讲解助手，只回答项目、方案、设备、流程相关问题。"
+    "项目问题必须基于知识库；知识库无依据时只回答：知识库中未找到您要的答案，我可以换个问法继续帮你查。"
+    "用中文口语化回答，每次1到2句，80到120字以内；禁止 Markdown、长列表、代码和推理过程。"
+)
+
+
 @dataclass(frozen=True)
 class HttpConfig:
     host: str = "0.0.0.0"
@@ -33,11 +40,18 @@ class VoiceGatewayConfig:
     ragflow_chat_id: str = ""
     tts_media_type: str = "audio/wav"
     welcome_text: str = "你好，我在这里。有什么可以帮你的吗？"
-    system_prompt: str = (
-        "你是机器人语音助手。请使用中文回答，尽量简短，适合语音播报。"
-        "优先基于知识库内容作答；如果知识库没有依据，请明确说你不确定，不要编造。"
-        "不要输出 Markdown 表格、长列表或代码块，除非用户明确要求。"
-    )
+    system_prompt: str = DEFAULT_VOICE_SYSTEM_PROMPT
+
+
+@dataclass(frozen=True)
+class TtsConfig:
+    provider: str = "xinference"
+    base_url: str = ""
+    api_key: str = ""
+    timeout_seconds: float = 15
+    voice: str = ""
+    speed: float = 1.0
+    fallback_provider: str = ""
 
 
 @dataclass(frozen=True)
@@ -45,6 +59,7 @@ class ServerAppConfig:
     http: HttpConfig
     ragflow: ConnectorConfig
     xinference: ConnectorConfig
+    tts: TtsConfig
     edge: EdgeAuthConfig
     voice_gateway: VoiceGatewayConfig
 
@@ -58,6 +73,7 @@ def parse_server_config(data: dict[str, Any]) -> ServerAppConfig:
     http = data.get("http", {})
     ragflow = data.get("ragflow", {})
     xinference = data.get("xinference", {})
+    tts = data.get("tts", {})
     edge = data.get("edge", {})
     voice_gateway = data.get("voice_gateway", {})
     bearer_tokens = edge.get("bearer_tokens", {})
@@ -82,6 +98,15 @@ def parse_server_config(data: dict[str, Any]) -> ServerAppConfig:
             api_key=str(xinference.get("api_key", "")),
             timeout_seconds=float(xinference.get("timeout_seconds", 15)),
         ),
+        tts=TtsConfig(
+            provider=str(tts.get("provider", "xinference")).strip() or "xinference",
+            base_url=str(tts.get("base_url", "")).rstrip("/"),
+            api_key=str(tts.get("api_key", "")),
+            timeout_seconds=float(tts.get("timeout_seconds", 15)),
+            voice=str(tts.get("voice", "")),
+            speed=float(tts.get("speed", 1.0)),
+            fallback_provider=str(tts.get("fallback_provider", "")).strip(),
+        ),
         edge=EdgeAuthConfig(
             bearer_tokens={str(k): str(v) for k, v in bearer_tokens.items()}
         ),
@@ -101,9 +126,7 @@ def parse_server_config(data: dict[str, Any]) -> ServerAppConfig:
             system_prompt=str(
                 voice_gateway.get(
                     "system_prompt",
-                    "你是机器人语音助手。请使用中文回答，尽量简短，适合语音播报。"
-                    "优先基于知识库内容作答；如果知识库没有依据，请明确说你不确定，不要编造。"
-                    "不要输出 Markdown 表格、长列表或代码块，除非用户明确要求。",
+                    DEFAULT_VOICE_SYSTEM_PROMPT,
                 )
             ),
         ),

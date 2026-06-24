@@ -24,10 +24,6 @@ def action_priority(intent: ActionIntent | None) -> int:
 
 
 def tracking_policy_for_state(state: EdgeSessionState) -> TrackingPolicy:
-    if state == EdgeSessionState.THINKING:
-        return TrackingPolicy(mode="hold-thinking", should_track=False)
-    if state == EdgeSessionState.SPEAKING:
-        return TrackingPolicy(mode="slow-speaking", should_track=True, cadence_divisor=3)
     return TrackingPolicy(mode=f"active-{state.value}", should_track=True, cadence_divisor=1)
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import math
 import struct
 from collections.abc import AsyncIterator
 
@@ -8,6 +10,9 @@ import numpy as np
 
 from ..events import AudioFrame
 from .base import Microphone, Speaker
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SoundDeviceMicrophone(Microphone):
@@ -66,8 +71,20 @@ class SoundDeviceMicrophone(Microphone):
 
 
 class SoundDeviceSpeaker(Speaker):
-    def __init__(self, *, device: str | int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        device: str | int | None = None,
+        normalize_loudness: bool = True,
+        target_rms_dbfs: float = -18.0,
+        peak_limit: float = 0.95,
+        max_output_channels: int = 2,
+    ) -> None:
         self.device = device
+        self.normalize_loudness = normalize_loudness
+        self.target_rms_dbfs = target_rms_dbfs
+        self.peak_limit = peak_limit
+        self.max_output_channels = max_output_channels
 
     async def play(
         self,
@@ -91,6 +108,10 @@ class SoundDeviceSpeaker(Speaker):
             actual_rate,
             actual_channels,
             self.device,
+            self.normalize_loudness,
+            self.target_rms_dbfs,
+            self.peak_limit,
+            self.max_output_channels,
         )
 
     async def stop(self) -> None:
@@ -194,13 +215,32 @@ def _play_blocking(
     sample_rate: int,
     channels: int,
     device: str | int | None,
+    normalize_loudness: bool = True,
+    target_rms_dbfs: float = -18.0,
+    peak_limit: float = 0.95,
+    max_output_channels: int = 2,
 ) -> None:
     samples = _normalize_output_shape(samples, channels)
+    samples, stats = _normalize_loudness(
+        samples,
+        enabled=normalize_loudness,
+        target_rms_dbfs=target_rms_dbfs,
+        peak_limit=peak_limit,
+    )
+    if stats["enabled"]:
+        LOGGER.info(
+            "playback loudness normalized rms_dbfs=%.1f target_dbfs=%.1f gain=%.3f peak_limited=%s",
+            stats["rms_dbfs"],
+            target_rms_dbfs,
+            stats["gain"],
+            stats["peak_limited"],
+        )
     device_channels, output_sample_rate = _resolve_output_device_params(
         sd_module,
         device,
         fallback_channels=channels,
         fallback_sample_rate=sample_rate,
+        max_output_channels=max_output_channels,
     )
     samples = _resample_samples(samples, input_rate=sample_rate, output_rate=output_sample_rate)
     samples = _adapt_samples_for_output_channels(samples, device_channels)
@@ -224,6 +264,7 @@ def _resolve_output_device_params(
     *,
     fallback_channels: int,
     fallback_sample_rate: int,
+    max_output_channels: int = 2,
 ) -> tuple[int, int]:
     try:
         device_info = sd_module.query_devices(device, kind="output")
@@ -231,9 +272,18 @@ def _resolve_output_device_params(
         default_sample_rate = int(
             round(float(device_info.get("default_samplerate", fallback_sample_rate)))
         )
-        return max(1, device_channels), max(1, default_sample_rate)
+        return _limit_output_channels(device_channels, max_output_channels), max(
+            1, default_sample_rate
+        )
     except Exception:
-        return max(1, fallback_channels), max(1, fallback_sample_rate)
+        return _limit_output_channels(fallback_channels, max_output_channels), max(
+            1, fallback_sample_rate
+        )
+
+
+def _limit_output_channels(device_channels: int, max_output_channels: int) -> int:
+    effective_max = max(1, int(max_output_channels or 1))
+    return max(1, min(int(device_channels), effective_max))
 
 
 def _adapt_samples_for_output_channels(
@@ -248,6 +298,71 @@ def _adapt_samples_for_output_channels(
 
     repeats = (device_channels + audio_channels - 1) // audio_channels
     return np.tile(samples, (1, repeats))[:, :device_channels]
+
+
+def _normalize_loudness(
+    samples: np.ndarray,
+    *,
+    enabled: bool,
+    target_rms_dbfs: float,
+    peak_limit: float,
+) -> tuple[np.ndarray, dict[str, float | bool]]:
+    if not enabled:
+        return samples, {
+            "enabled": False,
+            "rms_dbfs": -120.0,
+            "gain": 1.0,
+            "peak_limited": False,
+        }
+
+    float_samples = _samples_to_float32(samples)
+    if float_samples.size == 0:
+        return float_samples, {
+            "enabled": True,
+            "rms_dbfs": -120.0,
+            "gain": 1.0,
+            "peak_limited": False,
+        }
+
+    float64_samples = float_samples.astype(np.float64, copy=False)
+    rms = float(np.sqrt(np.mean(float64_samples * float64_samples)))
+    if rms <= 1e-6:
+        return float_samples, {
+            "enabled": True,
+            "rms_dbfs": -120.0,
+            "gain": 1.0,
+            "peak_limited": False,
+        }
+
+    target_rms = 10 ** (target_rms_dbfs / 20)
+    gain = target_rms / rms
+    peak = float(np.max(np.abs(float_samples)))
+    effective_peak_limit = min(max(float(peak_limit), 0.05), 1.0)
+    peak_limited = False
+    if peak > 0 and peak * gain > effective_peak_limit:
+        gain = effective_peak_limit / peak
+        peak_limited = True
+
+    adjusted = np.clip(
+        float_samples * gain,
+        -effective_peak_limit,
+        effective_peak_limit,
+    ).astype(np.float32)
+    rms_dbfs = 20 * math.log10(rms) if rms > 0 else -120.0
+    return adjusted, {
+        "enabled": True,
+        "rms_dbfs": rms_dbfs,
+        "gain": float(gain),
+        "peak_limited": peak_limited,
+    }
+
+
+def _samples_to_float32(samples: np.ndarray) -> np.ndarray:
+    if np.issubdtype(samples.dtype, np.integer):
+        info = np.iinfo(samples.dtype)
+        scale = float(max(abs(info.min), info.max))
+        return (samples.astype(np.float32) / scale).astype(np.float32)
+    return samples.astype(np.float32, copy=False)
 
 
 def _resample_samples(

@@ -67,6 +67,13 @@ class VadConfig:
     silence_ms: int
     max_utterance_ms: int
     pre_roll_ms: int
+    engine: str = "energy"
+    model_path: str = ""
+    sample_rate: int = 16000
+    threshold: float = 0.45
+    negative_threshold: float = 0.30
+    min_speech_ms: int = 250
+    cooldown_ms: int = 800
 
 
 @dataclass(frozen=True)
@@ -78,6 +85,10 @@ class VoiceConfig:
     speech_interrupt_enabled: bool
     suppress_mic_while_speaking: bool
     welcome_once_per_session: bool
+    local_welcome_enabled: bool = False
+    welcome_audio_path: str = "assets/audio/welcome.wav"
+    presence_listening_enabled: bool = False
+    face_absence_stop_listening_seconds: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -85,6 +96,10 @@ class SpeakerConfig:
     enabled: bool
     device: str | None
     sample_rate: int
+    normalize_loudness: bool = True
+    target_rms_dbfs: float = -18.0
+    peak_limit: float = 0.95
+    max_output_channels: int = 2
 
 
 @dataclass(frozen=True)
@@ -301,6 +316,13 @@ def _parse_config(data: dict[str, Any]) -> EdgeConfig:
             silence_ms=int(vad.get("silence_ms", 800)),
             max_utterance_ms=int(vad.get("max_utterance_ms", 10000)),
             pre_roll_ms=int(vad.get("pre_roll_ms", 300)),
+            engine=str(vad.get("engine", "energy")),
+            model_path=str(vad.get("model_path", "")),
+            sample_rate=int(vad.get("sample_rate", 16000)),
+            threshold=float(vad.get("threshold", 0.45)),
+            negative_threshold=float(vad.get("negative_threshold", 0.30)),
+            min_speech_ms=int(vad.get("min_speech_ms", 250)),
+            cooldown_ms=int(vad.get("cooldown_ms", 800)),
         ),
         voice=VoiceConfig(
             visual_listen_timeout_ms=int(
@@ -324,11 +346,27 @@ def _parse_config(data: dict[str, Any]) -> EdgeConfig:
             welcome_once_per_session=bool(
                 voice.get("welcome_once_per_session", True)
             ),
+            local_welcome_enabled=bool(
+                voice.get("local_welcome_enabled", False)
+            ),
+            welcome_audio_path=str(
+                voice.get("welcome_audio_path", "assets/audio/welcome.wav")
+            ),
+            presence_listening_enabled=bool(
+                voice.get("presence_listening_enabled", False)
+            ),
+            face_absence_stop_listening_seconds=float(
+                voice.get("face_absence_stop_listening_seconds", 2.0)
+            ),
         ),
         speaker=SpeakerConfig(
             enabled=bool(speaker.get("enabled", True)),
             device=_parse_audio_device(speaker.get("device")),
             sample_rate=int(speaker.get("sample_rate", 16000)),
+            normalize_loudness=bool(speaker.get("normalize_loudness", True)),
+            target_rms_dbfs=float(speaker.get("target_rms_dbfs", -18.0)),
+            peak_limit=float(speaker.get("peak_limit", 0.95)),
+            max_output_channels=int(speaker.get("max_output_channels", 2)),
         ),
         servo=ServoConfig(
             enabled=bool(servo.get("enabled", False)),
@@ -451,6 +489,18 @@ def _validate_config(config: EdgeConfig) -> None:
         raise ValueError("voice.visual_listen_timeout_ms must be positive")
     if config.voice.followup_listen_timeout_ms <= 0:
         raise ValueError("voice.followup_listen_timeout_ms must be positive")
+    if config.voice.face_absence_stop_listening_seconds < 0:
+        raise ValueError("voice.face_absence_stop_listening_seconds must be non-negative")
+    if config.vad.sample_rate not in {8000, 16000}:
+        raise ValueError("vad.sample_rate must be 8000 or 16000")
+    if config.vad.threshold <= 0 or config.vad.threshold >= 1:
+        raise ValueError("vad.threshold must be between 0 and 1")
+    if config.vad.negative_threshold <= 0 or config.vad.negative_threshold >= config.vad.threshold:
+        raise ValueError("vad.negative_threshold must be greater than 0 and less than vad.threshold")
+    if config.vad.min_speech_ms <= 0:
+        raise ValueError("vad.min_speech_ms must be positive")
+    if config.vad.cooldown_ms < 0:
+        raise ValueError("vad.cooldown_ms must be non-negative")
     if config.tracking.target_lock_timeout_ms < 0:
         raise ValueError("tracking.target_lock_timeout_ms must be non-negative")
     if config.admin.enabled and not config.admin.auth_token:

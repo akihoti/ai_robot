@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
+from collections.abc import Awaitable, Callable
 
+from .action_groups import execute_welcome_wave_action_group
 from .admin.runtime_state import runtime_state
 from .devices.base import ServoController
-from .events import ActionIntent
+from .events import ActionIntent, ActionName
 from .interaction import action_priority
 
 LOGGER = logging.getLogger(__name__)
+SleepFunc = Callable[[float], Awaitable[None]]
 
 
 class ActionDispatcher:
@@ -17,9 +20,12 @@ class ActionDispatcher:
         self,
         action_queue: asyncio.Queue[ActionIntent],
         servo_controller: ServoController,
+        *,
+        wave_sleep: SleepFunc = asyncio.sleep,
     ) -> None:
         self.action_queue = action_queue
         self.servo_controller = servo_controller
+        self.wave_sleep = wave_sleep
         self._degraded = False
 
     async def run(self) -> None:
@@ -101,6 +107,13 @@ class ActionDispatcher:
 
     async def _execute_intent(self, intent: ActionIntent) -> None:
         try:
+            if intent.name == ActionName.WELCOME_MOTION:
+                handled = await execute_welcome_wave_action_group(
+                    self.servo_controller,
+                    sleep=self.wave_sleep,
+                )
+                if handled:
+                    return
             await self.servo_controller.execute(intent)
         except Exception:
             self._degraded = True
